@@ -5,6 +5,7 @@ import type { GameState } from '../sim/types';
 import { EventTicker } from './EventTicker';
 import { FinancesTab } from './tabs/FinancesTab';
 import { MarketTab } from './tabs/MarketTab';
+import { ResearchTab } from './tabs/ResearchTab';
 import { OrdersTab } from './tabs/OrdersTab';
 import { StaffTab } from './tabs/StaffTab';
 import { SuppliersTab } from './tabs/SuppliersTab';
@@ -55,6 +56,8 @@ function badgesFor(state: GameState, tab: PanelTab): Badge[] {
       );
       return promos ? [{ n: promos, tone: 'warn', title: `${promos} rival promotion(s) running` }] : [];
     }
+    case 'research':
+      return state.research.active ? [{ n: 1, tone: 'accent', title: 'Research in progress' }] : [];
     case 'finances':
       return state.cash < 0 ? [{ n: 1, tone: 'bad', title: 'Cash is negative' }] : [];
     default:
@@ -69,6 +72,7 @@ const TABS: { id: PanelTab; label: string; render: () => ReactNode }[] = [
   { id: 'suppliers', label: 'Suppliers', render: () => <SuppliersTab /> },
   { id: 'staff', label: 'Staff', render: () => <StaffTab /> },
   { id: 'finances', label: 'Finances', render: () => <FinancesTab /> },
+  { id: 'research', label: 'R&D', render: () => <ResearchTab /> },
   { id: 'upgrades', label: 'Upgrades', render: () => <UpgradesTab /> },
 ];
 

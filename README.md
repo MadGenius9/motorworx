@@ -39,6 +39,8 @@ Once you have some reputation and spare cash, open **Vehicles** to buy tooling f
 
 You are not alone: three rival makers (Vantor, Halberd, Sunline) compete for open-market buyers and react to your prices, run promotions, and launch new models over time. Dealer offers you leave waiting can be won by a rival. The **Market** tab shows market share, rival prices per segment and rival news.
 
+The **R&D** tab runs one research project at a time: faster stations, fewer defects, cheaper builds, more dealer orders and more appealing cars. Each project costs cash up front and finishes after some game hours.
+
 Controls: drag to pan, mouse wheel to zoom, click a station for details and actions. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout

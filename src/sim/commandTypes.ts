@@ -37,6 +37,11 @@ export type Command =
   | { type: 'setFinish'; model: ModelId; trim: TrimId; finish: FinishId }
   | { type: 'setPrice'; model: ModelId; trim: TrimId; price: number }
   | { type: 'setMarketListed'; model: ModelId; trim: TrimId; listed: boolean }
+  // Research
+  /** Pays the project's cost and starts it in the R&D lab (one at a time). */
+  | { type: 'startResearch'; project: string }
+  /** Stops the active project. Progress and money are lost. */
+  | { type: 'cancelResearch' }
   // Tutorial
   | { type: 'dismissTutorial' }
   | { type: 'showTutorial' };

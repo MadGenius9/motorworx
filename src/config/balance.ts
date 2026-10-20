@@ -23,6 +23,40 @@ export type StaffRole = 'operator' | 'inspector' | 'technician';
 
 export type Recipe = Partial<Record<StationId, Partial<Record<ComponentId, number>>>>;
 
+/** What a completed research project changes. Multipliers stack multiplicatively, additions add up. */
+export interface ResearchEffect {
+  /** Cycle-time multiplier per station. */
+  cycleMult?: Partial<Record<StationId, number>>;
+  /** Multiplier on model changeover (retooling) minutes. */
+  changeoverMult?: number;
+  /** Multiplier on equipment wear. */
+  wearMult?: number;
+  /** Multiplier on the defect chance caused by component quality. */
+  componentDefectMult?: number;
+  /** Multiplier on the base defect chance. */
+  baseDefectMult?: number;
+  /** Added to the inspection detection rate. */
+  detectionAdd?: number;
+  /** Appeal added to every trim, or only to premium trims. */
+  appealAdd?: number;
+  premiumAppealAdd?: number;
+  /** Steel coils saved per vehicle at stamping (never below 1). */
+  steelSaved?: number;
+  /** Multiplier on the chance of a new dealer offer each hour. */
+  offerChanceMult?: number;
+}
+
+export interface ResearchProject {
+  name: string;
+  branch: 'process' | 'quality' | 'product';
+  blurb: string;
+  cost: number;
+  /** Game minutes the lab needs. */
+  minutes: number;
+  requires: string[];
+  effect: ResearchEffect;
+}
+
 /** Values for one model × trim combination. */
 export interface TrimSpec {
   /** Reference market value; dealer order prices and market demand are measured against it. */
@@ -484,6 +518,124 @@ export const BALANCE = {
     /** Dealer offer prices follow rival pricing: price × (1 + follow × (average rival index − 1)). */
     offerPriceFollow: 0.5,
     shareHistoryDays: 14,
+  },
+
+  /**
+   * R&D lab: one project at a time, paid up front (an operating expense), finished after `minutes` of game
+   * time. Effects are permanent. Cancelling keeps no progress and refunds nothing.
+   */
+  research: {
+    branches: { process: 'Process', quality: 'Quality', product: 'Product' } as Record<ResearchProject['branch'], string>,
+    projects: {
+      leanStamping: {
+        name: 'Lean Stamping',
+        branch: 'process',
+        blurb: 'Faster die changes and press scheduling.',
+        cost: 9_000,
+        minutes: 18 * 60,
+        requires: [],
+        effect: { cycleMult: { stamping: 0.85 } },
+      },
+      quickChange: {
+        name: 'Quick-Change Tooling',
+        branch: 'process',
+        blurb: 'Modular fixtures halve retooling between models.',
+        cost: 11_000,
+        minutes: 24 * 60,
+        requires: ['leanStamping'],
+        effect: { changeoverMult: 0.5 },
+      },
+      roboticWelding: {
+        name: 'Robotic Welding',
+        branch: 'process',
+        blurb: 'Welding robots on the body line.',
+        cost: 16_000,
+        minutes: 30 * 60,
+        requires: ['leanStamping'],
+        effect: { cycleMult: { body: 0.82 } },
+      },
+      lineBalancing: {
+        name: 'Line Balancing',
+        branch: 'process',
+        blurb: 'Rebalanced final assembly tasks remove the main bottleneck.',
+        cost: 22_000,
+        minutes: 36 * 60,
+        requires: ['roboticWelding', 'quickChange'],
+        effect: { cycleMult: { final: 0.85, paint: 0.92 } },
+      },
+      spc: {
+        name: 'Statistical Process Control',
+        branch: 'quality',
+        blurb: 'Incoming-part sampling: cheap parts cause fewer defects.',
+        cost: 7_000,
+        minutes: 16 * 60,
+        requires: [],
+        effect: { componentDefectMult: 0.6 },
+      },
+      predictiveMaintenance: {
+        name: 'Predictive Maintenance',
+        branch: 'quality',
+        blurb: 'Vibration sensors on every station slow wear.',
+        cost: 9_000,
+        minutes: 24 * 60,
+        requires: ['spc'],
+        effect: { wearMult: 0.7 },
+      },
+      visionInspection: {
+        name: 'Vision Inspection',
+        branch: 'quality',
+        blurb: 'Camera tunnel at inspection catches more defects.',
+        cost: 11_000,
+        minutes: 24 * 60,
+        requires: ['spc'],
+        effect: { detectionAdd: 0.12 },
+      },
+      zeroDefect: {
+        name: 'Zero-Defect Program',
+        branch: 'quality',
+        blurb: 'Plant-wide quality culture: fewer defects at every station.',
+        cost: 16_000,
+        minutes: 36 * 60,
+        requires: ['visionInspection', 'predictiveMaintenance'],
+        effect: { baseDefectMult: 0.5, componentDefectMult: 0.8 },
+      },
+      dealerNetwork: {
+        name: 'Dealer Network',
+        branch: 'product',
+        blurb: 'Regional sales reps bring in more dealer orders.',
+        cost: 10_000,
+        minutes: 16 * 60,
+        requires: [],
+        effect: { offerChanceMult: 1.4 },
+      },
+      premiumInteriors: {
+        name: 'Premium Interiors',
+        branch: 'product',
+        blurb: 'Better materials and design for every Premium trim.',
+        cost: 14_000,
+        minutes: 20 * 60,
+        requires: ['dealerNetwork'],
+        effect: { premiumAppealAdd: 8 },
+      },
+      lightweightPlatform: {
+        name: 'Lightweight Platform',
+        branch: 'product',
+        blurb: 'High-strength steel: one coil less per vehicle.',
+        cost: 26_000,
+        minutes: 36 * 60,
+        requires: ['dealerNetwork'],
+        effect: { steelSaved: 1 },
+      },
+      designStudio: {
+        name: 'Design Studio',
+        branch: 'product',
+        blurb: 'An in-house styling team makes every model more appealing.',
+        cost: 34_000,
+        minutes: 40 * 60,
+        requires: ['premiumInteriors', 'lightweightPlatform'],
+        effect: { appealAdd: 8 },
+      },
+    } as Record<string, ResearchProject>,
   },
 
   reputation: { min: 0, max: 100 },

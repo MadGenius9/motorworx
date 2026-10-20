@@ -1,4 +1,6 @@
-import { BALANCE, type ComponentId, type ModelId, type StationId, type TrimId } from '../config/balance';
+import { BALANCE, STATION_IDS, type ComponentId, type ModelId, type StationId, type TrimId } from '../config/balance';
+import { recipeFor } from '../sim/selectors';
+import type { GameState } from '../sim/types';
 export { formatMoney, formatDuration, formatTime, clockOf, dayOf, stationName } from '../sim/selectors';
 
 export function pct(x: number, digits = 0): string {
@@ -29,19 +31,16 @@ export const NEXT_STATION: Record<StationId, string> = {
   inspection: 'Yard / Rework',
 };
 
-/** Units of a component one vehicle of `model`/`trim` consumes, given its finish. */
+/** Units of a component one vehicle of `model`/`trim` consumes, given its finish (and research, with `state`). */
 export function componentsPerVehicle(
   model: ModelId,
   trim: TrimId,
   finishId: keyof typeof BALANCE.finishes,
   c: ComponentId,
+  state?: GameState,
 ): number {
-  const recipe = BALANCE.models[model].trims[trim].recipe;
   let total = 0;
-  for (const st of Object.keys(recipe) as StationId[]) {
-    const q = recipe[st]?.[c] ?? 0;
-    total += st === 'paint' ? q * BALANCE.finishes[finishId].paintMult : q;
-  }
+  for (const st of STATION_IDS) total += recipeFor(model, trim, st, finishId, state)[c] ?? 0;
   return total;
 }
 

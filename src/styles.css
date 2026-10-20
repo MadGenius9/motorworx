@@ -1343,3 +1343,18 @@ li.current .tut-check {
   padding-top: 2px;
   padding-bottom: 2px;
 }
+
+/* R&D tab */
+.effect-list {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.research-card.research-locked {
+  opacity: 0.6;
+}
+.research-card.research-done {
+  border-color: rgba(63, 185, 80, 0.45);
+}
+.research-card.research-active {
+  border-color: var(--blue);
+}

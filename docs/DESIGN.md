@@ -105,10 +105,18 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * **UI:** Market tab (overall share, per-segment share and rival prices, rival profiles, daily sales, rival news). Alert "X isn't selling" when unreserved stock would take more than 3 days to clear, with a one-click price match.
 * Saves are version 3; v2 saves gain fresh rivals and uncontested existing offers.
 
+## Research (milestone 4)
+
+* `BALANCE.research.projects`: 12 projects in three branches (Process, Quality, Product), each with cost, game-minute duration, prerequisites and an effect. `state.research = { completed, active }`.
+* `startResearch` pays the cost up front (ledger/expense category `research`, part of operating expenses) and needs the prerequisites, a free lab and cash. `cancelResearch` loses progress and refunds nothing. The lab ticks once per game minute alongside production.
+* `researchEffects(state)` combines completed effects. They are applied where the numbers are computed: `cycleMinutes(…, state)`, `changeoverMinutes`, `recipeFor(…, state)` (steel saved, never below 1), equipment wear, defect chance, `detectionRate`, player appeal in `segmentShares`, and the dealer-offer chance.
+* Balance check (automated player, 20 days, 6 seeds): product research pays clearly (+19 % net worth); quality and process research are near neutral for a demand-limited player and pay back within days once the line is the bottleneck.
+* Saves are version 4; v3 saves start with nothing researched.
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts
-export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'research' | 'upgrades';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }

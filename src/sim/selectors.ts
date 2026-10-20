@@ -2,7 +2,7 @@
  * Read-only helpers used by the UI and renderer. All functions are pure (never mutate state).
  */
 import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
-import type { TrimSpec } from '../config/balance';
+import type { ResearchEffect, TrimSpec } from '../config/balance';
 import type { Command } from './commandTypes';
 import type {
   ComponentId,
@@ -17,7 +17,7 @@ import type {
   VehicleStage,
 } from './types';
 
-export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'research' | 'upgrades';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }
@@ -135,6 +135,108 @@ export function modelColorHex(state: GameState, m: ModelId): string {
   return (BALANCE.colors.find((c) => c.id === id) ?? BALANCE.colors[0]).hex;
 }
 
+// ───────────────────────────── research ─────────────────────────────
+
+export interface ResearchEffects {
+  cycleMult: Record<StationId, number>;
+  changeoverMult: number;
+  wearMult: number;
+  componentDefectMult: number;
+  baseDefectMult: number;
+  detectionAdd: number;
+  appealAdd: number;
+  premiumAppealAdd: number;
+  steelSaved: number;
+  offerChanceMult: number;
+}
+
+/** Combined effects of a list of completed projects (multipliers multiply, additions add). */
+export function combineEffects(ids: readonly string[]): ResearchEffects {
+  const out: ResearchEffects = {
+    cycleMult: { stamping: 1, body: 1, paint: 1, final: 1, inspection: 1 },
+    changeoverMult: 1,
+    wearMult: 1,
+    componentDefectMult: 1,
+    baseDefectMult: 1,
+    detectionAdd: 0,
+    appealAdd: 0,
+    premiumAppealAdd: 0,
+    steelSaved: 0,
+    offerChanceMult: 1,
+  };
+  for (const id of ids) {
+    const e: ResearchEffect | undefined = BALANCE.research.projects[id]?.effect;
+    if (!e) continue;
+    for (const [st, m] of Object.entries(e.cycleMult ?? {})) out.cycleMult[st as StationId] *= m ?? 1;
+    out.changeoverMult *= e.changeoverMult ?? 1;
+    out.wearMult *= e.wearMult ?? 1;
+    out.componentDefectMult *= e.componentDefectMult ?? 1;
+    out.baseDefectMult *= e.baseDefectMult ?? 1;
+    out.detectionAdd += e.detectionAdd ?? 0;
+    out.appealAdd += e.appealAdd ?? 0;
+    out.premiumAppealAdd += e.premiumAppealAdd ?? 0;
+    out.steelSaved += e.steelSaved ?? 0;
+    out.offerChanceMult *= e.offerChanceMult ?? 1;
+  }
+  return out;
+}
+
+/** Effects of everything the player has researched. */
+export function researchEffects(state: GameState | undefined): ResearchEffects {
+  return combineEffects(state?.research?.completed ?? []);
+}
+
+/** Appeal bonus research gives a trim. */
+export function researchAppeal(state: GameState, trim: TrimId): number {
+  const e = researchEffects(state);
+  return e.appealAdd + (trim === 'premium' ? e.premiumAppealAdd : 0);
+}
+
+export type ResearchStatus = 'done' | 'active' | 'available' | 'locked';
+
+export function researchStatus(state: GameState, id: string): ResearchStatus {
+  const r = state.research;
+  if (r.completed.includes(id)) return 'done';
+  if (r.active?.id === id) return 'active';
+  const p = BALANCE.research.projects[id];
+  return p && p.requires.every((x) => r.completed.includes(x)) ? 'available' : 'locked';
+}
+
+/** Why a project can't be started right now, or null. */
+export function researchBlocker(state: GameState, id: string): string | null {
+  const p = BALANCE.research.projects[id];
+  if (!p) return 'Unknown project.';
+  const st = researchStatus(state, id);
+  if (st === 'done') return 'Already researched.';
+  if (st === 'active') return 'Already in progress.';
+  if (st === 'locked') {
+    const missing = p.requires.filter((x) => !state.research.completed.includes(x)).map((x) => BALANCE.research.projects[x]?.name ?? x);
+    return `Research ${missing.join(' and ')} first.`;
+  }
+  if (state.research.active) return `The lab is busy with ${BALANCE.research.projects[state.research.active.id]?.name}.`;
+  if (state.cash < p.cost) return `Needs ${formatMoney(p.cost)} cash (you have ${formatMoney(state.cash)}).`;
+  return null;
+}
+
+/** Plain-language list of a project's effects. */
+export function describeEffect(e: ResearchEffect): string[] {
+  const out: string[] = [];
+  const pctFaster = (m: number) => `${Math.round((1 - m) * 100)}%`;
+  for (const [st, m] of Object.entries(e.cycleMult ?? {})) {
+    if (m !== undefined) out.push(`${BALANCE.stations[st as StationId].name} ${pctFaster(m)} faster`);
+  }
+  if (e.changeoverMult !== undefined) out.push(`Retooling between models ${pctFaster(e.changeoverMult)} shorter`);
+  if (e.wearMult !== undefined) out.push(`Equipment wears ${pctFaster(e.wearMult)} slower`);
+  if (e.componentDefectMult !== undefined) out.push(`Defects from part quality −${Math.round((1 - e.componentDefectMult) * 100)}%`);
+  if (e.baseDefectMult !== undefined) out.push(`Base defect rate −${Math.round((1 - e.baseDefectMult) * 100)}%`);
+  if (e.detectionAdd !== undefined) out.push(`Inspection catches +${Math.round(e.detectionAdd * 100)} points more defects`);
+  if (e.appealAdd !== undefined) out.push(`+${e.appealAdd} appeal on every model and trim`);
+  if (e.premiumAppealAdd !== undefined) out.push(`+${e.premiumAppealAdd} appeal on Premium trims`);
+  if (e.steelSaved !== undefined) out.push(`${e.steelSaved} steel coil less per vehicle`);
+  if (e.offerChanceMult !== undefined) out.push(`${Math.round((e.offerChanceMult - 1) * 100)}% more dealer offers`);
+  return out;
+}
+
 // ───────────────────────────── stations ─────────────────────────────
 
 export function stationStaff(state: GameState, id: StationId): number {
@@ -177,24 +279,29 @@ export function queueCapacity(state: GameState, id: StationId): number {
   return BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * state.stations[id].capacityLevel;
 }
 
-/** Work minutes for one vehicle at a station, excluding any model changeover. */
-export function cycleMinutes(id: StationId, model: ModelId, trim: TrimId, finish: FinishId): number {
-  const base = Math.round(BALANCE.stations[id].baseMinutes * BALANCE.trims[trim].timeMult * BALANCE.models[model].timeMult);
-  return base + (id === 'paint' ? BALANCE.finishes[finish].paintMinutesAdd : 0);
+/** Work minutes for one vehicle at a station, excluding any model changeover. Pass `state` to apply research. */
+export function cycleMinutes(id: StationId, model: ModelId, trim: TrimId, finish: FinishId, state?: GameState): number {
+  const base = BALANCE.stations[id].baseMinutes * BALANCE.trims[trim].timeMult * BALANCE.models[model].timeMult;
+  const paint = id === 'paint' ? BALANCE.finishes[finish].paintMinutesAdd : 0;
+  return Math.max(1, Math.round((base + paint) * researchEffects(state).cycleMult[id]));
 }
 
 /** Retooling minutes the station would add before starting a vehicle of `model` now. */
 export function changeoverMinutes(state: GameState, id: StationId, model: ModelId): number {
   const last = state.stations[id].lastModel;
-  return last !== null && last !== model ? BALANCE.changeover.minutes[id] : 0;
+  return last !== null && last !== model ? Math.round(BALANCE.changeover.minutes[id] * researchEffects(state).changeoverMult) : 0;
 }
 
-/** Components consumed by `station` for one vehicle (paint station quantities × finish.paintMult). */
+/**
+ * Components consumed by `station` for one vehicle (paint station quantities × finish.paintMult).
+ * Pass `state` to apply research (e.g. steel saved at stamping).
+ */
 export function recipeFor(
   model: ModelId,
   trim: TrimId,
   station: StationId,
   finish: FinishId,
+  state?: GameState,
 ): Partial<Record<ComponentId, number>> {
   const r = trimSpec(model, trim).recipe[station];
   const out: Partial<Record<ComponentId, number>> = {};
@@ -204,6 +311,8 @@ export function recipeFor(
     const q = r[c];
     if (q && q > 0) out[c] = q * mult;
   }
+  const saved = researchEffects(state).steelSaved;
+  if (saved > 0 && out.steel) out.steel = Math.max(1, out.steel - saved);
   return out;
 }
 
@@ -235,7 +344,7 @@ export function detectionRate(state: GameState): number {
   const n = state.staff.inspector;
   if (n <= 0) return 0;
   const Q = BALANCE.quality;
-  return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1));
+  return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1) + researchEffects(state).detectionAdd);
 }
 
 // ───────────────────────────── staff ─────────────────────────────
@@ -404,7 +513,7 @@ export function segmentShares(
   const price = opts.price ?? mc.price[trim];
   const present = opts.playerPresent ?? true;
   const aPlayer = present
-    ? attractiveness(t.appeal + BALANCE.finishes[finish].appealAdd, state.reputation, price / segmentReference(model, trim, finish))
+    ? attractiveness(t.appeal + BALANCE.finishes[finish].appealAdd + researchAppeal(state, trim), state.reputation, price / segmentReference(model, trim, finish))
     : 0;
   let activeCount = 0;
   let sumRivals = 0;
@@ -472,7 +581,7 @@ export function estimatedDailyThroughput(state: GameState, model: ModelId, trim:
   const finish = state.product.models[model].finish[trim];
   let worst = 0;
   for (const id of STATION_IDS) {
-    const per = cycleMinutes(id, model, trim, finish) / state.stations[id].slots.length;
+    const per = cycleMinutes(id, model, trim, finish, state) / state.stations[id].slots.length;
     if (per > worst) worst = per;
   }
   return worst > 0 ? MPD / worst : 0;
@@ -486,7 +595,7 @@ export function estimateUnitCost(
   const finish = state.product.models[model].finish[trim];
   const qty: Partial<Record<ComponentId, number>> = {};
   for (const id of STATION_IDS) {
-    const r = recipeFor(model, trim, id, finish);
+    const r = recipeFor(model, trim, id, finish, state);
     for (const c of COMPONENT_IDS) {
       const q = r[c];
       if (q) qty[c] = (qty[c] ?? 0) + q;
@@ -974,6 +1083,22 @@ export function getAlerts(state: GameState): Alert[] {
           target ? `. ${target.name} sells at ${formatMoney(target.price)}` : ''
         }.`,
         actions,
+      });
+    }
+  }
+
+  // Idle R&D lab once the company is established and has spare cash
+  if (!state.gameOver && !state.research.active && state.stats.ordersPaid >= 2) {
+    const affordable = Object.entries(BALANCE.research.projects)
+      .filter(([id]) => researchStatus(state, id) === 'available')
+      .sort((a, b) => a[1].cost - b[1].cost)[0];
+    if (affordable && state.cash >= affordable[1].cost * 2.5) {
+      alerts.push({
+        id: 'research-idle',
+        severity: 'info',
+        title: 'R&D lab is idle',
+        cause: `Research gives permanent bonuses. ${affordable[1].name} costs ${formatMoney(affordable[1].cost)}.`,
+        actions: [{ label: 'Open R&D', action: { kind: 'openTab', tab: 'research' } }],
       });
     }
   }

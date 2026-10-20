@@ -15,6 +15,7 @@ import {
   nextUpgradeCost,
   nextWarehouseCost,
   orderProgress,
+  researchBlocker,
   stationName,
   isModel,
   modelName,
@@ -369,6 +370,26 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       return ok(
         cmd.listed ? `Unreserved ${label} cars are now for sale on the open market.` : `${label} cars are no longer offered on the open market.`,
       );
+    }
+
+    // ─────────────── Research ───────────────
+    case 'startResearch': {
+      const p = BALANCE.research.projects[cmd.project];
+      if (!p) return fail('Unknown research project.');
+      const blocker = researchBlocker(state, cmd.project);
+      if (blocker) return fail(blocker);
+      postCash(state, 'research', `Research: ${p.name}`, -p.cost);
+      state.research.active = { id: cmd.project, remaining: p.minutes, total: p.minutes };
+      logEvent(state, 'info', `R&D started ${p.name} — done in ${Math.round(p.minutes / 60)}h.`);
+      return ok(`Started ${p.name} (${formatMoney(p.cost)}). The lab finishes it in ${Math.round(p.minutes / 60)} game hours.`);
+    }
+    case 'cancelResearch': {
+      const a = state.research.active;
+      if (!a) return fail('The R&D lab has no active project.');
+      const name = BALANCE.research.projects[a.id]?.name ?? a.id;
+      state.research.active = null;
+      logEvent(state, 'warn', `R&D project ${name} cancelled; its cost is not refunded.`);
+      return ok(`Cancelled ${name}. Its cost is not refunded.`);
     }
 
     // ─────────────── Tutorial ───────────────

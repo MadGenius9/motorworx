@@ -14,6 +14,7 @@ const EXPENSE_CATEGORIES: ReadonlySet<LedgerCategory> = new Set<LedgerCategory>(
   'hiring',
   'severance',
   'penalty',
+  'research',
 ]);
 
 export function isExpenseCategory(c: LedgerCategory): c is ExpenseCategory {

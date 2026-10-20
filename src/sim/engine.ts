@@ -8,6 +8,7 @@ import { chance, pick, randInt, randRange } from './rng';
 import {
   changeoverMinutes,
   componentName,
+  describeEffect,
   cycleMinutes,
   dailyPayroll,
   dayOf,
@@ -20,6 +21,7 @@ import {
   modelColorHex,
   queueCapacity,
   recipeFor,
+  researchEffects,
   rivalName,
   rivalPriceIndex,
   segmentShares,
@@ -136,7 +138,7 @@ function startSlot(
     );
   }
   st.lastModel = v.model;
-  return newSlot(v.id, cycleMinutes(id, v.model, v.trim, v.finish), componentQuality, changeover);
+  return newSlot(v.id, cycleMinutes(id, v.model, v.trim, v.finish, state), componentQuality, changeover);
 }
 
 /** Warranty cost and reputation hit for a vehicle leaving the plant with an undetected defect. */
@@ -291,7 +293,7 @@ function generateOffer(state: GameState): void {
   const open = state.orders.filter((o) => o.status === 'offered').length;
   if (open >= O.maxOpenOffers) return;
   const rep = state.reputation;
-  if (!chance(state, O.baseChance + rep * O.chancePerReputation)) return;
+  if (!chance(state, (O.baseChance + rep * O.chancePerReputation) * researchEffects(state).offerChanceMult)) return;
   const model = pickModel(state);
   const trim = chance(state, O.premiumShareBase + rep * O.premiumSharePerRep) ? 'premium' : 'economy';
   const qty = randInt(state, O.minQty, O.maxQtyBase + Math.floor(rep / O.repPerExtraQty));
@@ -434,7 +436,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       }
       const job = state.plan[jobIdx];
       const finish = state.product.models[job.model].finish[job.trim];
-      const need = recipeFor(job.model, job.trim, 'stamping', finish);
+      const need = recipeFor(job.model, job.trim, 'stamping', finish, state);
       const missing = missingMaterials(state, need);
       if (missing) {
         addIssue(st.issues, { kind: 'materials', text: missing.text, components: missing.components });
@@ -478,7 +480,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
         i--;
         continue;
       }
-      const need = recipeFor(v.model, v.trim, id, v.finish);
+      const need = recipeFor(v.model, v.trim, id, v.finish, state);
       const missing = missingMaterials(state, need);
       if (missing) {
         addIssue(st.issues, { kind: 'materials', text: missing.text, components: missing.components });
@@ -513,7 +515,11 @@ function completeSlot(state: GameState, id: StationId, st: StationState, slot: W
     }
     return;
   }
-  const p = Q.baseDefect + (1 - slot.componentQuality) * Q.componentWeight + (1 - st.condition / 100) * Q.conditionWeight;
+  const fx = researchEffects(state);
+  const p =
+    Q.baseDefect * fx.baseDefectMult +
+    (1 - slot.componentQuality) * Q.componentWeight * fx.componentDefectMult +
+    (1 - st.condition / 100) * Q.conditionWeight;
   if (chance(state, p)) {
     v.defect = true;
     v.defectNotes.push(stationName(id));
@@ -585,7 +591,7 @@ function tickStation(state: GameState, id: StationId): void {
   let worked = false;
   if (sf > 0) {
     const S = BALANCE.stations[id];
-    const wear = S.wearPerActiveMinute * Math.pow(E.reliabilityWearMult, st.reliabilityLevel) * sf;
+    const wear = S.wearPerActiveMinute * Math.pow(E.reliabilityWearMult, st.reliabilityLevel) * researchEffects(state).wearMult * sf;
     for (const slot of st.slots) {
       if (!slot || slot.done) continue;
       worked = true;
@@ -768,6 +774,17 @@ function rivalsMidnight(state: GameState): void {
   mk.today = { day, player: 0, rivals: Object.fromEntries(mk.rivals.map((r) => [r.id, 0])) };
 }
 
+function researchTick(state: GameState): void {
+  const a = state.research.active;
+  if (!a) return;
+  a.remaining -= 1;
+  if (a.remaining > 0) return;
+  state.research.completed.push(a.id);
+  state.research.active = null;
+  const p = BALANCE.research.projects[a.id];
+  logEvent(state, 'good', `Research complete: ${p?.name ?? a.id}. ${p ? describeEffect(p.effect).join('; ') : ''}.`);
+}
+
 function midnight(state: GameState): void {
   rivalsMidnight(state);
   const endedDay = dayOf(state.time - 1);
@@ -859,6 +876,7 @@ export function step(state: GameState): void {
   if (state.gameOver) return;
   state.time += 1;
   receiveShipments(state);
+  researchTick(state);
   tickStation(state, 'inspection');
   tickRework(state);
   tickStation(state, 'final');

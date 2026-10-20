@@ -685,6 +685,12 @@ export class FactoryRenderer {
     text(ctx, formatTime(state.time), r.x + 14, r.y + 78, { size: 15, weight: 700, color: COLORS.text });
     text(ctx, `Built today: ${state.stats.builtToday}`, r.x + 14, r.y + 100, { size: 11, color: COLORS.textDim });
     text(ctx, `Total built: ${state.stats.vehiclesBuilt}`, r.x + 14, r.y + 116, { size: 11, color: COLORS.textDim });
+    const lab = state.research.active;
+    if (lab) {
+      const name = BALANCE.research.projects[lab.id]?.name ?? lab.id;
+      const f = lab.total > 0 ? 1 - lab.remaining / lab.total : 0;
+      text(ctx, `R&D: ${name} ${Math.floor(f * 100)}%`, r.x + 14, r.y + 132, { size: 11, color: COLORS.service });
+    }
     if (this.controller.paused) {
       text(ctx, 'PAUSED', r.x + r.w - 12, r.y + 78, { size: 11, weight: 800, color: COLORS.blocked, align: 'right' });
     }

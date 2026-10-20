@@ -17,6 +17,7 @@ import {
   estimatedProfitPerVehicle,
   marketDemandPerDay,
   modelName,
+  researchAppeal,
   trimSpec,
   unlockBlocker,
   vehicleLabel,
@@ -38,7 +39,7 @@ function TrimCard({ model, trim }: { model: ModelId; trim: TrimId }) {
   const est = estimateUnitCost(state, model, trim);
   const estMargin = estimatedProfitPerVehicle(state, model, trim);
   const actual = actualTrimResults(state, model, trim);
-  const appeal = t.appeal + BALANCE.finishes[finish].appealAdd;
+  const appeal = t.appeal + BALANCE.finishes[finish].appealAdd + researchAppeal(state, trim);
   const refValue = t.baseValue + BALANCE.finishes[finish].valueAdd;
   const key = `${model}-${trim}`;
 
@@ -97,7 +98,7 @@ function TrimCard({ model, trim }: { model: ModelId; trim: TrimId }) {
         <span className="num">{appeal}</span>
         <span className="muted">Cycle times</span>
         <span className="num">
-          {STATION_IDS.map((s) => `${stationName(s).split(' ')[0]} ${formatDuration(cycleMinutes(s, model, trim, finish))}`).join(' · ')}
+          {STATION_IDS.map((s) => `${stationName(s).split(' ')[0]} ${formatDuration(cycleMinutes(s, model, trim, finish, state))}`).join(' · ')}
         </span>
       </div>
 
@@ -178,8 +179,8 @@ function LockedModel({ model }: { model: ModelId }) {
               <tr key={t}>
                 <td>{trimName(t)}</td>
                 <td className="r num">{formatMoney(ts.baseValue)}</td>
-                <td className="r num">{componentsPerVehicle(model, t, finish, 'steel')}</td>
-                <td className="r num">{componentsPerVehicle(model, t, finish, 'interior')}</td>
+                <td className="r num">{componentsPerVehicle(model, t, finish, 'steel', state)}</td>
+                <td className="r num">{componentsPerVehicle(model, t, finish, 'interior', state)}</td>
                 <td className="r num">{ts.baseDemandPerDay.toFixed(1)}</td>
               </tr>
             );

@@ -6,8 +6,8 @@ import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } fro
 
 export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
 
-/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models, v3 rivals. */
-export const SAVE_VERSION = 3;
+/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models, v3 rivals, v4 research. */
+export const SAVE_VERSION = 4;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
@@ -195,7 +195,8 @@ export type LedgerCategory =
   | 'hiring'
   | 'severance'
   | 'penalty'
-  | 'upgrade';
+  | 'upgrade'
+  | 'research';
 
 export interface LedgerEntry {
   id: number;
@@ -217,7 +218,8 @@ export type ExpenseCategory =
   | 'warranty'
   | 'hiring'
   | 'severance'
-  | 'penalty';
+  | 'penalty'
+  | 'research';
 
 export interface DailySummary {
   day: number;
@@ -300,6 +302,12 @@ export interface MarketState {
   history: MarketDay[];
 }
 
+export interface ResearchState {
+  /** Finished project ids, in completion order. */
+  completed: string[];
+  active: { id: string; remaining: number; total: number } | null;
+}
+
 export interface GameStats {
   vehiclesStarted: number;
   vehiclesBuilt: number;
@@ -338,6 +346,7 @@ export interface GameState {
   yard: number[];
   orders: SalesOrder[];
   market: MarketState;
+  research: ResearchState;
   plan: ProductionJob[];
   staff: Record<StaffRole, number>;
   finance: FinanceState;

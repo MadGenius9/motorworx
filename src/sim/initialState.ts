@@ -26,6 +26,7 @@ const EXPENSES: ExpenseCategory[] = [
   'hiring',
   'severance',
   'penalty',
+  'research',
 ];
 
 function makeStation(id: StationId): StationState {
@@ -157,6 +158,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     yard: [],
     orders: [firstOrder],
     market: createMarket(time),
+    research: { completed: [], active: null },
     plan: [],
     staff: { ...S.staff },
     finance: {

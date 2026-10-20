@@ -72,6 +72,12 @@ export function deserialize(json: string): GameState {
   if (!isObj(data)) throw new Error('The save file does not contain a MotorWorx game.');
   if (data.version === 1) migrateV1(data);
   if (data.version === 2) migrateV2(data);
+  if (data.version === 3) {
+    // v3 → v4: research lab. Nothing researched yet; the new expense category starts at 0.
+    data.research = { completed: [], active: null };
+    if (isObj(data.finance) && isObj(data.finance.opex)) data.finance.opex.research = 0;
+    data.version = 4;
+  }
   if (data.version !== SAVE_VERSION) {
     throw new Error(
       `This save was made by an incompatible version of MotorWorx (save version ${String(
@@ -86,6 +92,7 @@ export function deserialize(json: string): GameState {
   for (const k of ['shipments', 'yard', 'orders', 'plan', 'events']) {
     if (!Array.isArray(data[k])) problems.push(k);
   }
+  if (!isObj(data.research) || !Array.isArray(data.research.completed)) problems.push('research');
   if (!isObj(data.market) || !Array.isArray(data.market.rivals) || !isObj(data.market.today)) problems.push('market');
   if (isObj(data.product)) {
     const models = data.product.models;

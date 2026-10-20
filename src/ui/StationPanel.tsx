@@ -174,7 +174,7 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
                 <KV
                   key={`${m}-${t}`}
                   k={`Cycle time · ${vehicleLabel(state, m, t)} (${BALANCE.finishes[finish].name})`}
-                  v={formatDuration(cycleMinutes(id, m, t, finish))}
+                  v={formatDuration(cycleMinutes(id, m, t, finish, state))}
                 />
               );
             }),

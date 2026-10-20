@@ -31,7 +31,7 @@ export function SuppliersTab() {
 
   const bump = (n: number) => setQtyText(String(Math.min(999, Math.max(1, (qtyValid ? qty : 0) + n))));
   const helperN = Math.floor(Number(helperCars));
-  const perCar = componentsPerVehicle(helperModel, helperTrim, state.product.models[helperModel].finish[helperTrim], component);
+  const perCar = componentsPerVehicle(helperModel, helperTrim, state.product.models[helperModel].finish[helperTrim], component, state);
   const helperQty = Number.isFinite(helperN) && helperN > 0 ? perCar * helperN : 0;
 
   return (

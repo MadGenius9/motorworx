@@ -26,6 +26,7 @@ const OPEX_LABEL: Record<ExpenseCategory, string> = {
   hiring: 'Hiring fees',
   severance: 'Severance',
   penalty: 'Penalties',
+  research: 'Research & development',
 };
 
 const LEDGER_CATS: LedgerCategory[] = [
@@ -41,6 +42,7 @@ const LEDGER_CATS: LedgerCategory[] = [
   'severance',
   'penalty',
   'upgrade',
+  'research',
 ];
 
 const r = (n: number) => formatMoney(Math.round(n));
