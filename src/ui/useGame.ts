@@ -21,6 +21,9 @@ export interface UiApi {
   openTab(tab: PanelTab): void;
   selectStation(id: StationId | null): void;
   selectedStation: StationId | null;
+  /** Plant shown in the factory view and used by the station panel. */
+  plant: number;
+  selectPlant(plant: number): void;
   notify(text: string, ok: boolean): void;
 }
 

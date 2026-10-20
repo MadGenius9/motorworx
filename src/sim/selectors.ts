@@ -9,9 +9,11 @@ import type {
   FinishId,
   GameState,
   ModelId,
+  PlantState,
   RivalState,
   SalesOrder,
   StationId,
+  StationState,
   TrimId,
   Vehicle,
   VehicleStage,
@@ -21,7 +23,7 @@ export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' 
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }
-  | { kind: 'openStation'; station: StationId }
+  | { kind: 'openStation'; station: StationId; plant?: number }
   | { kind: 'command'; command: Command };
 export interface Alert {
   id: string;
@@ -237,46 +239,92 @@ export function describeEffect(e: ResearchEffect): string[] {
   return out;
 }
 
+// ───────────────────────────── plants ─────────────────────────────
+
+/** Plant by index (default: the starting plant). */
+export function plantOf(state: GameState, plant = 0): PlantState {
+  return state.plants[plant] ?? state.plants[0];
+}
+
+export function stationOf(state: GameState, id: StationId, plant = 0): StationState {
+  return plantOf(state, plant).stations[id];
+}
+
+export function plantOperating(state: GameState, plant = 0): boolean {
+  return plantOf(state, plant).constructionRemaining <= 0;
+}
+
+/** Indices of plants that are built and running. */
+export function operatingPlants(state: GameState): number[] {
+  return state.plants.filter((p) => p.constructionRemaining <= 0).map((p) => p.id);
+}
+
+/** "Riverside" with one plant; "Riverside · Paint" style labels need the plant only when there are several. */
+export function plantPrefix(state: GameState, plant: number): string {
+  return state.plants.length > 1 ? `${plantOf(state, plant).name} ` : '';
+}
+
+/** Next site that can be bought, or null when all are built. */
+export function nextPlantSite(state: GameState): { index: number; name: string; cost: number; minReputation: number } | null {
+  const i = state.plants.length;
+  const site = BALANCE.plants.sites[i];
+  return site ? { index: i, ...site } : null;
+}
+
+export function buildPlantBlocker(state: GameState): string | null {
+  const site = nextPlantSite(state);
+  if (!site) return 'Every plant site is already built.';
+  if (state.plants.some((p) => p.constructionRemaining > 0)) return 'A plant is already under construction.';
+  if (state.reputation < site.minReputation) {
+    return `Needs reputation ${site.minReputation} (you have ${Math.floor(state.reputation)}).`;
+  }
+  if (state.cash < site.cost) return `Needs ${formatMoney(site.cost)} cash (you have ${formatMoney(state.cash)}).`;
+  return null;
+}
+
 // ───────────────────────────── stations ─────────────────────────────
 
-export function stationStaff(state: GameState, id: StationId): number {
-  return id === 'inspection' ? state.staff.inspector : state.stations[id].assigned;
+export function stationStaff(state: GameState, id: StationId, plant = 0): number {
+  return stationOf(state, id, plant).assigned;
 }
 
-export function stationRequiredStaff(state: GameState, id: StationId): number {
-  return BALANCE.stations[id].staffPerSlot * state.stations[id].slots.length;
+export function stationRequiredStaff(state: GameState, id: StationId, plant = 0): number {
+  return BALANCE.stations[id].staffPerSlot * stationOf(state, id, plant).slots.length;
 }
 
-export function staffFactor(state: GameState, id: StationId): number {
-  const req = stationRequiredStaff(state, id);
+export function staffFactor(state: GameState, id: StationId, plant = 0): number {
+  const req = stationRequiredStaff(state, id, plant);
   if (req <= 0) return 0;
-  return Math.max(0, Math.min(1, stationStaff(state, id) / req));
+  return Math.max(0, Math.min(1, stationStaff(state, id, plant) / req));
 }
 
-/** True if the station has any vehicle in a slot or queue (or, for stamping, scheduled work). */
-export function stationHasWork(state: GameState, id: StationId): boolean {
-  const st = state.stations[id];
+/** True if the station has any vehicle in a slot or queue (or, for stamping, work it is allowed to start). */
+export function stationHasWork(state: GameState, id: StationId, plant = 0): boolean {
+  const st = stationOf(state, id, plant);
   if (st.slots.some((s) => s !== null) || st.queue.length > 0) return true;
-  if (id === 'stamping') return state.plan.some((j) => j.started < j.quantity);
+  if (id === 'stamping') {
+    const allowed = plantOf(state, plant).allowedModels;
+    return plantOperating(state, plant) && state.plan.some((j) => j.started < j.quantity && allowed.includes(j.model));
+  }
   return false;
 }
 
-export function stationStatus(state: GameState, id: StationId): StationStatus {
-  const st = state.stations[id];
+export function stationStatus(state: GameState, id: StationId, plant = 0): StationStatus {
+  const st = stationOf(state, id, plant);
   if (st.service) return st.service.kind === 'repair' ? 'repair' : 'maintenance';
   if (st.broken) return 'broken';
   if (st.issues.some((i) => i.kind === 'downstream' || i.kind === 'materials' || i.kind === 'cash')) return 'blocked';
-  const sf = staffFactor(state, id);
-  if (sf < 1 && (sf === 0 || st.issues.some((i) => i.kind === 'staff') || stationHasWork(state, id))) {
+  const sf = staffFactor(state, id, plant);
+  if (sf < 1 && (sf === 0 || st.issues.some((i) => i.kind === 'staff') || stationHasWork(state, id, plant))) {
     return 'understaffed';
   }
   if (st.slots.some((s) => s !== null && !s.done)) return 'running';
   return 'idle';
 }
 
-export function queueCapacity(state: GameState, id: StationId): number {
+export function queueCapacity(state: GameState, id: StationId, plant = 0): number {
   if (id === 'stamping') return 0;
-  return BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * state.stations[id].capacityLevel;
+  return BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * stationOf(state, id, plant).capacityLevel;
 }
 
 /** Work minutes for one vehicle at a station, excluding any model changeover. Pass `state` to apply research. */
@@ -287,8 +335,8 @@ export function cycleMinutes(id: StationId, model: ModelId, trim: TrimId, finish
 }
 
 /** Retooling minutes the station would add before starting a vehicle of `model` now. */
-export function changeoverMinutes(state: GameState, id: StationId, model: ModelId): number {
-  const last = state.stations[id].lastModel;
+export function changeoverMinutes(state: GameState, id: StationId, model: ModelId, plant = 0): number {
+  const last = stationOf(state, id, plant).lastModel;
   return last !== null && last !== model ? Math.round(BALANCE.changeover.minutes[id] * researchEffects(state).changeoverMult) : 0;
 }
 
@@ -317,8 +365,8 @@ export function recipeFor(
 }
 
 /** Breakdown probability per active minute at the station's current condition. */
-export function hazardPerActiveMinute(state: GameState, id: StationId): number {
-  const st = state.stations[id];
+export function hazardPerActiveMinute(state: GameState, id: StationId, plant = 0): number {
+  const st = stationOf(state, id, plant);
   const E = BALANCE.equipment;
   if (st.condition <= 0) return 1;
   if (st.condition >= E.hazardThreshold) return 0;
@@ -326,22 +374,22 @@ export function hazardPerActiveMinute(state: GameState, id: StationId): number {
   return E.hazardScale * x * x * Math.pow(E.reliabilityHazardMult, st.reliabilityLevel);
 }
 
-export function breakdownHazardPerHour(state: GameState, id: StationId): number {
-  const p = hazardPerActiveMinute(state, id);
+export function breakdownHazardPerHour(state: GameState, id: StationId, plant = 0): number {
+  const p = hazardPerActiveMinute(state, id, plant);
   if (p >= 1) return 1;
   return 1 - Math.pow(1 - p, 60);
 }
 
-export function breakdownRisk(state: GameState, id: StationId): 'low' | 'elevated' | 'high' {
-  const c = state.stations[id].condition;
+export function breakdownRisk(state: GameState, id: StationId, plant = 0): 'low' | 'elevated' | 'high' {
+  const c = stationOf(state, id, plant).condition;
   if (c < BALANCE.equipment.dangerCondition) return 'high';
   if (c < BALANCE.equipment.warnCondition) return 'elevated';
   return 'low';
 }
 
-/** Probability that inspection catches a defect (0 when there are no inspectors). */
-export function detectionRate(state: GameState): number {
-  const n = state.staff.inspector;
+/** Probability that a plant's inspection catches a defect (0 when it has no inspectors). */
+export function detectionRate(state: GameState, plant = 0): number {
+  const n = stationOf(state, 'inspection', plant).assigned;
   if (n <= 0) return 0;
   const Q = BALANCE.quality;
   return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1) + researchEffects(state).detectionAdd);
@@ -351,7 +399,7 @@ export function detectionRate(state: GameState): number {
 
 export function assignedOperators(state: GameState): number {
   let n = 0;
-  for (const id of STATION_IDS) if (id !== 'inspection') n += state.stations[id].assigned;
+  for (const p of state.plants) for (const id of STATION_IDS) if (id !== 'inspection') n += p.stations[id].assigned;
   return n;
 }
 
@@ -359,8 +407,23 @@ export function unassignedOperators(state: GameState): number {
   return Math.max(0, state.staff.operator - assignedOperators(state));
 }
 
+export function assignedInspectors(state: GameState): number {
+  return state.plants.reduce((n, p) => n + p.stations.inspection.assigned, 0);
+}
+
+export function unassignedInspectors(state: GameState): number {
+  return Math.max(0, state.staff.inspector - assignedInspectors(state));
+}
+
+/** Free workers of the role a station uses. */
+export function unassignedFor(state: GameState, id: StationId): number {
+  return id === 'inspection' ? unassignedInspectors(state) : unassignedOperators(state);
+}
+
 export function busyTechnicians(state: GameState): number {
-  return STATION_IDS.filter((id) => state.stations[id].service !== null).length;
+  let n = 0;
+  for (const p of state.plants) n += STATION_IDS.filter((id) => p.stations[id].service !== null).length;
+  return n;
 }
 
 export function freeTechnicians(state: GameState): number {
@@ -431,17 +494,19 @@ export function dailyPayroll(state: GameState): number {
 /** Energy accrued so far today plus the current active slots running until midnight. */
 export function projectedDailyCosts(state: GameState): { payroll: number; overhead: number; energy: number; total: number } {
   const payroll = dailyPayroll(state);
-  const overhead = BALANCE.overhead.dailyBase;
+  const overhead = BALANCE.overhead.dailyBase * operatingPlants(state).length;
   const minutesLeft = MPD - (((state.time % MPD) + MPD) % MPD);
   let energy = 0;
-  for (const id of STATION_IDS) {
-    const st = state.stations[id];
-    energy += st.energyAccrued;
-    if (st.broken || st.service) continue;
-    const sf = staffFactor(state, id);
-    if (sf <= 0) continue;
-    const active = st.slots.filter((s) => s !== null && !s.done).length;
-    energy += (active * BALANCE.stations[id].energyPerActiveHour * minutesLeft) / 60;
+  for (const p of state.plants) {
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      energy += st.energyAccrued;
+      if (st.broken || st.service) continue;
+      const sf = staffFactor(state, id, p.id);
+      if (sf <= 0) continue;
+      const active = st.slots.filter((s) => s !== null && !s.done).length;
+      energy += (active * BALANCE.stations[id].energyPerActiveHour * minutesLeft) / 60;
+    }
   }
   energy = Math.round(energy);
   return { payroll, overhead, energy, total: payroll + overhead + energy };
@@ -576,15 +641,19 @@ export function marketDemandPerDay(state: GameState, model: ModelId, trim: TrimI
   return demandPerDay(state, model, trim, price ?? mc.price[trim], mc.finish[trim]);
 }
 
-/** Estimated vehicles per day at the bottleneck station (ignores staffing, materials and changeovers). */
+/** Estimated vehicles per day across operating plants, from each plant's bottleneck station (ignores staffing, materials and changeovers). */
 export function estimatedDailyThroughput(state: GameState, model: ModelId, trim: TrimId): number {
   const finish = state.product.models[model].finish[trim];
-  let worst = 0;
-  for (const id of STATION_IDS) {
-    const per = cycleMinutes(id, model, trim, finish, state) / state.stations[id].slots.length;
-    if (per > worst) worst = per;
+  let total = 0;
+  for (const plant of operatingPlants(state)) {
+    let worst = 0;
+    for (const id of STATION_IDS) {
+      const per = cycleMinutes(id, model, trim, finish, state) / stationOf(state, id, plant).slots.length;
+      if (per > worst) worst = per;
+    }
+    if (worst > 0) total += MPD / worst;
   }
-  return worst > 0 ? MPD / worst : 0;
+  return total;
 }
 
 export function estimateUnitCost(
@@ -746,8 +815,13 @@ export function ledgerReconciliation(state: GameState): { expected: number; actu
 
 // ───────────────────────────── upgrades ─────────────────────────────
 
-export function nextUpgradeCost(state: GameState, kind: 'capacity' | 'reliability', station: StationId): number | null {
-  const st = state.stations[station];
+export function nextUpgradeCost(
+  state: GameState,
+  kind: 'capacity' | 'reliability',
+  station: StationId,
+  plant = 0,
+): number | null {
+  const st = stationOf(state, station, plant);
   const costs = BALANCE.upgrades[kind].costs;
   const level = kind === 'capacity' ? st.capacityLevel : st.reliabilityLevel;
   return level < costs.length ? costs[level] : null;
@@ -771,13 +845,13 @@ export function vehiclesInStage(state: GameState, stage: VehicleStage): Vehicle[
 
 // ───────────────────────────── alerts ─────────────────────────────
 
-function canRepair(state: GameState, id: StationId): boolean {
-  const st = state.stations[id];
+function canRepair(state: GameState, id: StationId, plant: number): boolean {
+  const st = stationOf(state, id, plant);
   return st.broken && !st.service && freeTechnicians(state) > 0 && state.cash >= BALANCE.equipment.repair.cost;
 }
 
-function canMaintain(state: GameState, id: StationId): boolean {
-  const st = state.stations[id];
+function canMaintain(state: GameState, id: StationId, plant: number): boolean {
+  const st = stationOf(state, id, plant);
   return !st.broken && !st.service && freeTechnicians(state) > 0 && state.cash >= BALANCE.equipment.maintenance.cost;
 }
 
@@ -840,29 +914,34 @@ export function getAlerts(state: GameState): Alert[] {
 
   const yardFull = state.yard.length >= yardCapacity(state);
 
+  for (const plant of state.plants) {
+  if (plant.constructionRemaining > 0) continue;
+  const pi = plant.id;
+  const sfx = pi === 0 ? '' : `-p${pi}`;
+  const at = plantPrefix(state, pi);
   for (const id of STATION_IDS) {
-    const st = state.stations[id];
-    const name = stationName(id);
+    const st = plant.stations[id];
+    const name = `${at}${stationName(id)}`;
     if (st.service) {
       alerts.push({
-        id: `service-${id}`,
+        id: `service-${id}${sfx}`,
         severity: 'info',
         title: `${name}: ${st.service.kind === 'repair' ? 'repair' : 'maintenance'} in progress`,
         cause: `A technician is working on it — ${formatDuration(st.service.remaining)} left. Production is paused here.`,
-        actions: [{ label: 'View station', action: { kind: 'openStation', station: id } }],
+        actions: [{ label: 'View station', action: { kind: 'openStation', station: id, plant: pi } }],
       });
       continue;
     }
     if (st.broken) {
       const actions: { label: string; action: AlertAction }[] = [];
-      if (canRepair(state, id)) {
-        actions.push({ label: `Repair (${formatMoney(E.repair.cost)})`, action: { kind: 'command', command: { type: 'repair', station: id } } });
+      if (canRepair(state, id, pi)) {
+        actions.push({ label: `Repair (${formatMoney(E.repair.cost)})`, action: { kind: 'command', command: { type: 'repair', station: id, plant: pi } } });
       } else {
         actions.push(...techOrCashActions(state, E.repair.cost));
       }
-      actions.push({ label: 'View station', action: { kind: 'openStation', station: id } });
+      actions.push({ label: 'View station', action: { kind: 'openStation', station: id, plant: pi } });
       alerts.push({
-        id: `broken-${id}`,
+        id: `broken-${id}${sfx}`,
         severity: 'critical',
         title: `${name} has broken down`,
         cause: `Worn equipment failed (condition ${Math.round(st.condition)}%). Production is stopped until a technician repairs it.`,
@@ -870,22 +949,22 @@ export function getAlerts(state: GameState): Alert[] {
       });
       continue;
     }
-    if (breakdownRisk(state, id) === 'high') {
+    if (breakdownRisk(state, id, pi) === 'high') {
       const actions: { label: string; action: AlertAction }[] = [];
-      if (canMaintain(state, id)) {
+      if (canMaintain(state, id, pi)) {
         actions.push({
           label: `Schedule maintenance (${formatMoney(E.maintenance.cost)})`,
-          action: { kind: 'command', command: { type: 'scheduleMaintenance', station: id } },
+          action: { kind: 'command', command: { type: 'scheduleMaintenance', station: id, plant: pi } },
         });
       } else {
         actions.push(...techOrCashActions(state, E.maintenance.cost));
       }
-      actions.push({ label: 'View station', action: { kind: 'openStation', station: id } });
+      actions.push({ label: 'View station', action: { kind: 'openStation', station: id, plant: pi } });
       alerts.push({
-        id: `risk-${id}`,
+        id: `risk-${id}${sfx}`,
         severity: 'warning',
         title: `${name}: high breakdown risk`,
-        cause: `Condition is ${Math.round(st.condition)}% (~${(breakdownHazardPerHour(state, id) * 100).toFixed(1)}% chance of failure per working hour). Maintenance restores it to 100%.`,
+        cause: `Condition is ${Math.round(st.condition)}% (~${(breakdownHazardPerHour(state, id, pi) * 100).toFixed(1)}% chance of failure per working hour). Maintenance restores it to 100%.`,
         actions,
       });
     }
@@ -895,7 +974,7 @@ export function getAlerts(state: GameState): Alert[] {
       const comps = materials.components ?? [];
       const incoming = comps.reduce((n, c) => n + incomingOf(state, c), 0);
       alerts.push({
-        id: `materials-${id}`,
+        id: `materials-${id}${sfx}`,
         severity: 'warning',
         title: `${name} is waiting for parts`,
         cause: materials.text + (incoming > 0 ? ` — ${incoming} unit(s) already on the way.` : ' — nothing on order.'),
@@ -903,25 +982,28 @@ export function getAlerts(state: GameState): Alert[] {
       });
     }
 
-    const sf = staffFactor(state, id);
-    if (sf < 1 && stationHasWork(state, id)) {
-      const have = stationStaff(state, id);
-      const need = stationRequiredStaff(state, id);
+    const sf = staffFactor(state, id, pi);
+    if (sf < 1 && stationHasWork(state, id, pi)) {
+      const have = stationStaff(state, id, pi);
+      const need = stationRequiredStaff(state, id, pi);
       const actions: { label: string; action: AlertAction }[] = [];
-      if (id === 'inspection') {
+      if (unassignedFor(state, id) > 0) {
+        actions.push({
+          label: id === 'inspection' ? 'Assign inspector' : 'Assign operator',
+          action: { kind: 'command', command: { type: 'assignOperator', station: id, delta: 1, plant: pi } },
+        });
+      } else if (id === 'inspection') {
         if (state.cash >= BALANCE.staff.inspector.hireFee) {
           actions.push({
             label: `Hire inspector (${formatMoney(BALANCE.staff.inspector.hireFee)})`,
             action: { kind: 'command', command: { type: 'hire', role: 'inspector', count: 1 } },
           });
         }
-      } else if (unassignedOperators(state) > 0) {
-        actions.push({ label: 'Assign operator', action: { kind: 'command', command: { type: 'assignOperator', station: id, delta: 1 } } });
       }
       actions.push({ label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } });
       const role = id === 'inspection' ? 'inspectors' : 'operators';
       alerts.push({
-        id: `staff-${id}`,
+        id: `staff-${id}${sfx}`,
         severity: sf === 0 ? 'warning' : 'info',
         title: sf === 0 ? `${name} has no ${role}` : `${name} is understaffed`,
         cause:
@@ -935,25 +1017,26 @@ export function getAlerts(state: GameState): Alert[] {
     const downstream = st.issues.find((i) => i.kind === 'downstream');
     if (downstream && !(id === 'inspection' && yardFull)) {
       alerts.push({
-        id: `blocked-${id}`,
+        id: `blocked-${id}${sfx}`,
         severity: 'warning',
         title: `${name} output blocked`,
         cause: `${downstream.text}. Finished work can't move on, so this station stops.`,
-        actions: [{ label: 'View station', action: { kind: 'openStation', station: id } }],
+        actions: [{ label: 'View station', action: { kind: 'openStation', station: id, plant: pi } }],
       });
     }
   }
 
   // Rework bay
-  const reworkCash = state.rework.issues.find((i) => i.kind === 'cash');
+  const reworkCash = plant.rework.issues.find((i) => i.kind === 'cash');
   if (reworkCash) {
     alerts.push({
-      id: 'rework-cash',
+      id: `rework-cash${sfx}`,
       severity: 'warning',
-      title: 'Rework bay waiting for cash',
+      title: `${at}rework bay waiting for cash`,
       cause: `${reworkCash.text}. Each rework costs ${formatMoney(BALANCE.quality.reworkCost)}.`,
       actions: [{ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
     });
+  }
   }
 
   // Yard
@@ -1027,10 +1110,26 @@ export function getAlerts(state: GameState): Alert[] {
     });
   }
 
+  // Plan jobs no operating plant is allowed to start
+  const blockedModels = new Set(
+    state.plan
+      .filter((j) => j.started < j.quantity && !operatingPlants(state).some((pi) => plantOf(state, pi).allowedModels.includes(j.model)))
+      .map((j) => j.model),
+  );
+  for (const m of blockedModels) {
+    alerts.push({
+      id: `plan-blocked-${m}`,
+      severity: 'warning',
+      title: `No plant may build the ${modelName(state, m)}`,
+      cause: `${modelName(state, m)} jobs are waiting in the plan, but every operating plant has that model switched off.`,
+      actions: [{ label: 'Allow at Plant 1', action: { kind: 'command', command: { type: 'setPlantModel', plant: 0, model: m, allowed: true } } }],
+    });
+  }
+
   // Nothing scheduled
-  const stamping = state.stations.stamping;
   const hasPlan = state.plan.some((j) => j.started < j.quantity);
-  if (!hasPlan && stamping.slots.every((s) => s === null) && !state.gameOver) {
+  const stampingIdle = operatingPlants(state).every((pi) => stationOf(state, 'stamping', pi).slots.every((x) => x === null));
+  if (!hasPlan && stampingIdle && !state.gameOver) {
     const model = unlockedModels(state)[0] ?? 'sedan';
     alerts.push({
       id: 'idle',
@@ -1103,7 +1202,19 @@ export function getAlerts(state: GameState): Alert[] {
     }
   }
 
-  // New model tooling within reach (only once the first order is paid, so it doesn't distract the tutorial).
+  // A new plant within reach (comfortably affordable)
+  const site = nextPlantSite(state);
+  if (site && !state.gameOver && buildPlantBlocker(state) === null && state.cash >= site.cost * 1.5) {
+    alerts.push({
+      id: 'plant-available',
+      severity: 'info',
+      title: `${site.name} plant site available`,
+      cause: `You can afford a second production line (${formatMoney(site.cost)}). It doubles capacity once staffed — worth it when orders outrun your line.`,
+      actions: [{ label: 'Open Upgrades', action: { kind: 'openTab', tab: 'upgrades' } }],
+    });
+  }
+
+    // New model tooling within reach (only once the first order is paid, so it doesn't distract the tutorial).
   if (state.stats.ordersPaid > 0 && !state.gameOver) {
     for (const m of MODEL_IDS) {
       if (state.product.models[m].unlocked || unlockBlocker(state, m) !== null) continue;
@@ -1150,8 +1261,8 @@ export function tutorialSteps(state: GameState): TutorialStep[] {
   const shortOrder = state.orders.find((o) => o.status === 'accepted' && orderProgress(state, o).shortfall > 0);
   const readyOrder = state.orders.find((o) => o.status === 'accepted' && o.reserved.length >= o.quantity);
   const unassigned = unassignedOperators(state);
-  const paint = state.stations.paint.assigned;
-  const final = state.stations.final.assigned;
+  const paint = stationOf(state, 'paint').assigned;
+  const final = stationOf(state, 'final').assigned;
   const scheduledForOrder = s.vehiclesStarted > 0 || state.plan.some((j) => j.orderId !== null);
 
   let staffAction: TutorialStep['action'] = { label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } };

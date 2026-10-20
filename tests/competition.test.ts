@@ -8,7 +8,7 @@ import { deserialize, serialize } from '../src/sim/save';
 import { getAlerts, recentMarketShare, segmentShares, trimSpec } from '../src/sim/selectors';
 import type { GameState } from '../src/sim/types';
 import { SAVE_VERSION } from '../src/sim/types';
-import { checkInvariants, mustOk } from './helpers';
+import { checkInvariants, mustOk, toV4Shape } from './helpers';
 
 const fair = 1 / BALANCE.competition.marketSizeCompanies;
 
@@ -113,7 +113,7 @@ describe('alerts', () => {
     for (let k = 0; k < 2; k++) {
       const id = s.nextId++;
       s.vehicles[String(id)] = {
-        id, serial: `MX-T${k}`, model: 'sedan', trim: 'economy', finish: 'solid', color: '#000', stage: 'finished',
+        id, plant: 0, serial: `MX-T${k}`, model: 'sedan', trim: 'economy', finish: 'solid', color: '#000', stage: 'finished',
         cost: 14000, defect: false, defectNotes: [], defectDetected: false, reworkCount: 0, orderId: null,
         plannedForOrderId: null, startedAt: s.time, finishedAt: s.time, closedAt: null, salePrice: null,
       };
@@ -145,7 +145,7 @@ describe('save migration v2 → v3', () => {
   it('adds rivals to an older save and keeps running', () => {
     const s = createInitialState();
     runTicks(s, 600);
-    const v2 = JSON.parse(serialize(s));
+    const v2 = toV4Shape(JSON.parse(serialize(s)));
     v2.version = 2;
     delete v2.market;
     for (const o of v2.orders) {

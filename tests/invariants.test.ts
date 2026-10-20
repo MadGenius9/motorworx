@@ -88,7 +88,7 @@ describe('(g) save/load preserves production state', () => {
     mustOk(s, { type: 'scheduleForOrder', orderId: id });
     ticks(s, 420);
     // Mid-production: something is being worked on and something is in transit or queued.
-    const busy = STATION_IDS.some((st) => s.stations[st].slots.some((sl) => sl !== null));
+    const busy = STATION_IDS.some((st) => s.plants[0].stations[st].slots.some((sl) => sl !== null));
     expect(busy).toBe(true);
     expect(orderProgress(s, s.orders[0]).inProduction).toBeGreaterThan(0);
 

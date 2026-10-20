@@ -10,7 +10,9 @@ import {
   stationRequiredStaff,
   stationStaff,
   stationStatus,
-  unassignedOperators,
+  modelName,
+  plantOf,
+  unassignedFor,
   unlockedModels,
   vehicleLabel,
   type StationStatus,
@@ -113,19 +115,21 @@ function QueueList({ state, ids, cap }: { state: GameState; ids: number[]; cap: 
 }
 
 export function StationPanel({ id, onClose }: { id: StationId; onClose: () => void }) {
-  const { state, dispatch, openTab } = useUi();
-  const st = state.stations[id];
+  const { state, dispatch, openTab, plant } = useUi();
+  const P = plantOf(state, plant);
+  const st = P.stations[id];
   const bal = BALANCE.stations[id];
-  const status = stationStatus(state, id);
+  const status = stationStatus(state, id, plant);
   const isInspection = id === 'inspection';
-  const staff = stationStaff(state, id);
-  const required = stationRequiredStaff(state, id);
+  const staff = stationStaff(state, id, plant);
+  const required = stationRequiredStaff(state, id, plant);
   const freeTech = freeTechnicians(state);
-  const unassigned = unassignedOperators(state);
-  const risk = breakdownRisk(state, id);
-  const hazard = breakdownHazardPerHour(state, id);
+  const unassigned = unassignedFor(state, id);
+  const roleWord = isInspection ? 'inspector' : 'operator';
+  const risk = breakdownRisk(state, id, plant);
+  const hazard = breakdownHazardPerHour(state, id, plant);
   const eq = BALANCE.equipment;
-  const qCap = queueCapacity(state, id);
+  const qCap = queueCapacity(state, id, plant);
   const wage = isInspection ? BALANCE.staff.inspector.dailyWage : BALANCE.staff.operator.dailyWage;
 
   const serviceReason = (cost: number): string | null => {
@@ -137,18 +141,21 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
   const maintReason = st.broken ? 'Station is broken — repair it instead' : serviceReason(eq.maintenance.cost);
   const repairReason = serviceReason(eq.repair.cost);
 
-  const capCost = nextUpgradeCost(state, 'capacity', id);
-  const relCost = nextUpgradeCost(state, 'reliability', id);
+  const capCost = nextUpgradeCost(state, 'capacity', id, plant);
+  const relCost = nextUpgradeCost(state, 'reliability', id, plant);
   const upgradeReason = (cost: number | null) =>
     cost === null ? 'Maximum level reached' : state.cash < cost ? `Not enough cash (need ${formatMoney(cost)})` : null;
 
-  const rw = state.rework;
+  const rw = P.rework;
 
   return (
     <aside className="station-panel" aria-label={`${stationName(id)} details`}>
       <header className="sp-head">
         <div>
-          <h2>{stationName(id)}</h2>
+          <h2>
+            {state.plants.length > 1 && <span className="muted">{P.name} · </span>}
+            {stationName(id)}
+          </h2>
           <div className="muted small">{bal.verb}</div>
         </div>
         <div className="sp-head-right">
@@ -163,6 +170,29 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
         <Section title="Status">
           <IssueList issues={st.issues} />
         </Section>
+
+        {id === 'stamping' && unlockedModels(state).length > 1 && (
+          <Section title={`Models built at ${P.name}`}>
+            <div className="model-toggles">
+              {unlockedModels(state).map((m) => {
+                const on = P.allowedModels.includes(m);
+                return (
+                  <label key={m} className="toggle">
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) => dispatch({ type: 'setPlantModel', plant, model: m, allowed: e.target.checked })}
+                    />
+                    <span>
+                      {modelName(state, m)} <span className="muted">{BALANCE.models[m].className}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="muted small">Stamping here skips plan jobs for unticked models. Dedicating a plant to one model avoids retooling.</p>
+          </Section>
+        )}
 
         <Section title="Capacity">
           <KV k="Work slots" v={st.slots.length} />
@@ -190,51 +220,40 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
         </Section>
 
         <Section title="Staffing">
-          {isInspection ? (
-            <>
-              <KV
-                k="Inspectors"
-                v={`${staff}/${required}`}
-                tone={staff === 0 ? 'bad' : staff < required ? 'warn' : undefined}
-              />
-              <KV k="Defect detection rate" v={pct(detectionRate(state))} />
-              <p className="muted small">Inspection uses every inspector on staff. Hire more to raise speed and detection.</p>
-              <ActionButton small onClick={() => openTab('staff')}>
-                Open Staff tab →
-              </ActionButton>
-            </>
-          ) : (
+          {isInspection && <KV k="Defect detection rate" v={pct(detectionRate(state, plant))} />}
+          {
             <>
               <div className="staff-row">
                 <span>
-                  Operators <b className="num">{st.assigned}</b>
+                  {isInspection ? 'Inspectors' : 'Operators'} <b className="num">{st.assigned}</b>
                   <span className="muted num">/{required} needed</span>
                 </span>
                 <span className="stepper">
                   <ActionButton
                     small
-                    onClick={() => dispatch({ type: 'assignOperator', station: id, delta: -1 })}
-                    disabledReason={st.assigned <= 0 ? 'No operators assigned here' : null}
+                    onClick={() => dispatch({ type: 'assignOperator', station: id, delta: -1, plant })}
+                    disabledReason={st.assigned <= 0 ? `No ${roleWord}s assigned here` : null}
                   >
                     −
                   </ActionButton>
                   <ActionButton
                     small
-                    onClick={() => dispatch({ type: 'assignOperator', station: id, delta: 1 })}
-                    disabledReason={unassigned <= 0 ? 'No unassigned operators — hire more in Staff' : null}
+                    onClick={() => dispatch({ type: 'assignOperator', station: id, delta: 1, plant })}
+                    disabledReason={unassigned <= 0 ? `No unassigned ${roleWord}s — hire more in Staff` : null}
                   >
                     +
                   </ActionButton>
                 </span>
               </div>
               <div className="muted small">
-                {unassigned} unassigned operator{unassigned === 1 ? '' : 's'} available.{' '}
+                {unassigned} unassigned {roleWord}
+                {unassigned === 1 ? '' : 's'} available.{' '}
                 <button type="button" className="link" onClick={() => openTab('staff')}>
                   Staff tab
                 </button>
               </div>
             </>
-          )}
+          }
         </Section>
 
         <Section title="Equipment">
@@ -267,7 +286,7 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
                 <ActionButton
                   variant="danger"
                   showReason
-                  onClick={() => dispatch({ type: 'repair', station: id })}
+                  onClick={() => dispatch({ type: 'repair', station: id, plant })}
                   disabledReason={repairReason}
                 >
                   Repair · {formatMoney(eq.repair.cost)} · {formatDuration(eq.repair.minutes)}
@@ -276,7 +295,7 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
               {!st.broken && (
                 <ActionButton
                   showReason
-                  onClick={() => dispatch({ type: 'scheduleMaintenance', station: id })}
+                  onClick={() => dispatch({ type: 'scheduleMaintenance', station: id, plant })}
                   disabledReason={maintReason}
                 >
                   Maintenance · {formatMoney(eq.maintenance.cost)} · {formatDuration(eq.maintenance.minutes)}
@@ -324,7 +343,7 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
               small
               showReason
               variant="primary"
-              onClick={() => dispatch({ type: 'upgradeCapacity', station: id })}
+              onClick={() => dispatch({ type: 'upgradeCapacity', station: id, plant })}
               disabledReason={upgradeReason(capCost)}
             >
               {capCost === null ? 'Maxed' : `Upgrade · ${formatMoney(capCost)}`}
@@ -341,7 +360,7 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
               small
               showReason
               variant="primary"
-              onClick={() => dispatch({ type: 'upgradeReliability', station: id })}
+              onClick={() => dispatch({ type: 'upgradeReliability', station: id, plant })}
               disabledReason={upgradeReason(relCost)}
             >
               {relCost === null ? 'Maxed' : `Upgrade · ${formatMoney(relCost)}`}

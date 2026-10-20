@@ -20,14 +20,22 @@ export type Command =
   // Staff
   | { type: 'hire'; role: StaffRole; count: number }
   | { type: 'fire'; role: StaffRole }
-  /** Operators only; inspection cannot be assigned (it uses all inspectors). */
-  | { type: 'assignOperator'; station: StationId; delta: 1 | -1 }
+  /**
+   * Moves one free worker onto (+1) or off (−1) a station. Operators staff the production stations;
+   * Quality Inspection takes inspectors. `plant` defaults to 0.
+   */
+  | { type: 'assignOperator'; station: StationId; delta: 1 | -1; plant?: number }
   // Equipment
-  | { type: 'scheduleMaintenance'; station: StationId }
-  | { type: 'repair'; station: StationId }
+  | { type: 'scheduleMaintenance'; station: StationId; plant?: number }
+  | { type: 'repair'; station: StationId; plant?: number }
   // Upgrades
-  | { type: 'upgradeCapacity'; station: StationId }
-  | { type: 'upgradeReliability'; station: StationId }
+  | { type: 'upgradeCapacity'; station: StationId; plant?: number }
+  | { type: 'upgradeReliability'; station: StationId; plant?: number }
+  // Plants
+  /** Buys and starts building the next plant site. */
+  | { type: 'buildPlant' }
+  /** Allows or forbids a plant to start a model. At least one model must stay allowed. */
+  | { type: 'setPlantModel'; plant: number; model: ModelId; allowed: boolean }
   | { type: 'upgradeWarehouse' }
   // Product (per model)
   /** Buys the model's tooling (BALANCE.models[model].unlockCost) so it can be built and ordered. */

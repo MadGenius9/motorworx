@@ -17,7 +17,7 @@ import {
 } from '../src/sim/selectors';
 import type { GameState } from '../src/sim/types';
 import { SAVE_VERSION } from '../src/sim/types';
-import { checkInvariants, mustOk } from './helpers';
+import { checkInvariants, mustOk, toV4Shape } from './helpers';
 
 const P = BALANCE.research.projects;
 
@@ -34,8 +34,9 @@ function rich(): GameState {
   s.finance.startingCash = 600_000;
   s.finance.today.cashEnd = 600_000;
   s.staff.operator = 0; // nobody on payroll — keeps cash simple during long lab runs
-  for (const st of Object.values(s.stations)) st.assigned = 0;
+  for (const st of Object.values(s.plants[0].stations)) st.assigned = 0;
   s.staff.inspector = 1;
+  s.plants[0].stations.inspection.assigned = 1;
   return s;
 }
 
@@ -96,7 +97,7 @@ describe('research effects', () => {
     const before = cycleMinutes('stamping', 'sedan', 'economy', 'solid', s);
     finish(s, 'leanStamping');
     expect(cycleMinutes('stamping', 'sedan', 'economy', 'solid', s)).toBeLessThan(before);
-    s.stations.body.lastModel = 'sedan';
+    s.plants[0].stations.body.lastModel = 'sedan';
     const co = changeoverMinutes(s, 'body', 'suv');
     finish(s, 'quickChange');
     expect(changeoverMinutes(s, 'body', 'suv')).toBe(Math.round(co * 0.5));
@@ -126,10 +127,10 @@ describe('research effects', () => {
     finish(s, 'leanStamping');
     finish(s, 'spc');
     s.staff.operator = 7;
-    s.stations.stamping.assigned = 2;
-    s.stations.body.assigned = 2;
-    s.stations.paint.assigned = 1;
-    s.stations.final.assigned = 2;
+    s.plants[0].stations.stamping.assigned = 2;
+    s.plants[0].stations.body.assigned = 2;
+    s.plants[0].stations.paint.assigned = 1;
+    s.plants[0].stations.final.assigned = 2;
     for (const [c, q] of [['steel', 8], ['powertrain', 4], ['interior', 4], ['wheels', 4], ['paint', 4]] as const)
       mustOk(s, { type: 'purchase', supplierId: 'apex', component: c, quantity: q });
     mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 4 });
@@ -153,7 +154,7 @@ describe('alerts and saves', () => {
 
   it('migrates a v3 save and keeps an in-progress project across save/load', () => {
     const s = rich();
-    const v3 = JSON.parse(serialize(s));
+    const v3 = toV4Shape(JSON.parse(serialize(s)));
     v3.version = 3;
     delete v3.research;
     delete v3.finance.opex.research;

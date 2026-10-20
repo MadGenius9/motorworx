@@ -8,6 +8,7 @@ import type {
   MarketState,
   ModelConfig,
   ModelId,
+  PlantState,
   RivalSegment,
   RivalState,
   SalesOrder,
@@ -29,22 +30,43 @@ const EXPENSES: ExpenseCategory[] = [
   'research',
 ];
 
-function makeStation(id: StationId): StationState {
+function makeStation(id: StationId, condition: number, assigned: number): StationState {
   return {
     id,
     slots: [null],
     queue: [],
     capacityLevel: 0,
     reliabilityLevel: 0,
-    condition: BALANCE.start.stationCondition[id],
+    condition,
     broken: false,
     service: null,
-    assigned: id === 'inspection' ? 0 : BALANCE.start.assignments[id],
+    assigned,
     issues: [],
     lastModel: null,
     energyAccrued: 0,
     completedTotal: 0,
     activeMinutesTotal: 0,
+  };
+}
+
+/**
+ * A plant with one slot per station. The starting plant uses BALANCE.start conditions and staffing;
+ * new plants get fresh equipment, no staff, and a construction countdown.
+ */
+export function newPlant(id: number, name: string, constructionMinutes: number): PlantState {
+  const first = id === 0;
+  const stations = {} as Record<StationId, StationState>;
+  for (const st of STATION_IDS) {
+    const assigned = first ? (st === 'inspection' ? BALANCE.start.staff.inspector : BALANCE.start.assignments[st]) : 0;
+    stations[st] = makeStation(st, first ? BALANCE.start.stationCondition[st] : BALANCE.plants.newCondition, assigned);
+  }
+  return {
+    id,
+    name,
+    stations,
+    rework: { queue: [], slot: null, issues: [] },
+    allowedModels: [...MODEL_IDS],
+    constructionRemaining: constructionMinutes,
   };
 }
 
@@ -98,8 +120,6 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     inventory[c] = { qty: s.qty, value: s.qty * s.unitCost, qualitySum: s.qty * s.quality };
   }
 
-  const stations = {} as Record<StationId, StationState>;
-  for (const id of STATION_IDS) stations[id] = makeStation(id);
 
   const fo = S.firstOrder;
   const terms = BALANCE.orders.paymentTerms[fo.paymentTermIndex] ?? BALANCE.orders.paymentTerms[0];
@@ -152,8 +172,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     inventory,
     shipments: [],
     warehouseLevel: 0,
-    stations,
-    rework: { queue: [], slot: null, issues: [] },
+    plants: [newPlant(0, BALANCE.plants.sites[0].name, 0)],
     vehicles: {},
     yard: [],
     orders: [firstOrder],

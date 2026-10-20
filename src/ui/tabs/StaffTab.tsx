@@ -1,5 +1,5 @@
 import { BALANCE, STATION_IDS, type StaffRole } from '../../config/balance';
-import { dailyPayroll, freeTechnicians, stationRequiredStaff, unassignedOperators } from '../../sim/selectors';
+import { dailyPayroll, freeTechnicians, stationRequiredStaff, unassignedInspectors, unassignedOperators } from '../../sim/selectors';
 import { ActionButton, KV, Section } from '../common';
 import { formatMoney, stationName } from '../format';
 import { useUi } from '../useGame';
@@ -8,13 +8,14 @@ const ROLES: StaffRole[] = ['operator', 'inspector', 'technician'];
 
 const ROLE_HELP: Record<StaffRole, string> = {
   operator: 'Run stamping, body, paint and final assembly. Assign them to stations below.',
-  inspector: 'Staff Quality Inspection. More inspectors = faster checks and higher detection.',
+  inspector: 'Staff Quality Inspection at each plant. More inspectors = faster checks and higher detection.',
   technician: 'Perform maintenance and repairs (one job each at a time).',
 };
 
 export function StaffTab() {
   const { state, dispatch } = useUi();
   const unassigned = unassignedOperators(state);
+  const freeInspectors = unassignedInspectors(state);
   const freeTech = freeTechnicians(state);
   const payroll = dailyPayroll(state);
 
@@ -82,62 +83,66 @@ export function StaffTab() {
         })}
       </Section>
 
-      <Section title="Operator assignments" right={<span className="small num">Unassigned: {unassigned}</span>}>
-        <table className="table">
-          <thead>
-            <tr>
-              <th>Station</th>
-              <th className="r">Assigned / needed</th>
-              <th className="r">Adjust</th>
-            </tr>
-          </thead>
-          <tbody>
-            {STATION_IDS.map((id) => {
-              const required = stationRequiredStaff(state, id);
-              if (id === 'inspection') {
-                const n = state.staff.inspector;
+      {state.plants.map((P) => (
+        <Section
+          key={P.id}
+          title={state.plants.length > 1 ? `Assignments · ${P.name}` : 'Assignments'}
+          right={
+            <span className="small num">
+              Free: {unassigned} operators · {freeInspectors} inspectors
+              {P.constructionRemaining > 0 ? ' · under construction' : ''}
+            </span>
+          }
+        >
+          <table className="table">
+            <thead>
+              <tr>
+                <th>Station</th>
+                <th className="r">Assigned / needed</th>
+                <th className="r">Adjust</th>
+              </tr>
+            </thead>
+            <tbody>
+              {STATION_IDS.map((id) => {
+                const required = stationRequiredStaff(state, id, P.id);
+                const a = P.stations[id].assigned;
+                const free = id === 'inspection' ? freeInspectors : unassigned;
+                const word = id === 'inspection' ? 'inspectors' : 'operators';
                 return (
                   <tr key={id}>
                     <td>{stationName(id)}</td>
-                    <td className={`r num${n === 0 ? ' tone-bad' : n < required ? ' tone-warn' : ''}`}>
-                      {n}/{required} inspectors
+                    <td className={`r num${a === 0 ? ' tone-bad' : a < required ? ' tone-warn' : ' tone-good'}`}>
+                      {a}/{required} {id === 'inspection' ? 'inspectors' : ''}
                     </td>
-                    <td className="r muted small">uses all inspectors</td>
+                    <td className="r">
+                      <span className="stepper">
+                        <ActionButton
+                          small
+                          disabledReason={a <= 0 ? 'None assigned' : null}
+                          onClick={() => dispatch({ type: 'assignOperator', station: id, delta: -1, plant: P.id })}
+                        >
+                          −
+                        </ActionButton>
+                        <ActionButton
+                          small
+                          disabledReason={free <= 0 ? `No unassigned ${word} — hire more` : null}
+                          onClick={() => dispatch({ type: 'assignOperator', station: id, delta: 1, plant: P.id })}
+                        >
+                          +
+                        </ActionButton>
+                      </span>
+                    </td>
                   </tr>
                 );
-              }
-              const a = state.stations[id].assigned;
-              return (
-                <tr key={id}>
-                  <td>{stationName(id)}</td>
-                  <td className={`r num${a === 0 ? ' tone-bad' : a < required ? ' tone-warn' : ' tone-good'}`}>
-                    {a}/{required}
-                  </td>
-                  <td className="r">
-                    <span className="stepper">
-                      <ActionButton
-                        small
-                        disabledReason={a <= 0 ? 'None assigned' : null}
-                        onClick={() => dispatch({ type: 'assignOperator', station: id, delta: -1 })}
-                      >
-                        −
-                      </ActionButton>
-                      <ActionButton
-                        small
-                        disabledReason={unassigned <= 0 ? 'No unassigned operators — hire more' : null}
-                        onClick={() => dispatch({ type: 'assignOperator', station: id, delta: 1 })}
-                      >
-                        +
-                      </ActionButton>
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-        <p className="muted small">Partial staffing runs a station at reduced speed (staff ÷ needed).</p>
-      </Section>
+              })}
+            </tbody>
+          </table>
+        </Section>
+      ))}
+      <p className="muted small">
+        Partial staffing runs a station at reduced speed (staff ÷ needed). New inspectors go to the inspection line that
+        needs them most.
+      </p>
     </div>
   );
 }

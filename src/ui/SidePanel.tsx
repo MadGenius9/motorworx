@@ -37,11 +37,11 @@ function badgesFor(state: GameState, tab: PanelTab): Badge[] {
       return unreserved ? [{ n: unreserved, tone: 'accent', title: `${unreserved} unreserved vehicle(s) in yard` }] : [];
     }
     case 'suppliers': {
-      const short = STATION_IDS.filter((id) => state.stations[id].issues.some((i) => i.kind === 'materials')).length;
+      const short = state.plants.flatMap((p) => STATION_IDS.map((id) => p.stations[id])).filter((st) => st.issues.some((i) => i.kind === 'materials')).length;
       return short ? [{ n: short, tone: 'warn', title: `${short} station(s) missing materials` }] : [];
     }
     case 'staff': {
-      const n = STATION_IDS.filter((id) => state.stations[id].issues.some((i) => i.kind === 'staff')).length;
+      const n = state.plants.flatMap((p) => STATION_IDS.map((id) => p.stations[id])).filter((st) => st.issues.some((i) => i.kind === 'staff')).length;
       return n ? [{ n, tone: 'warn', title: `${n} station(s) short of staff` }] : [];
     }
     case 'market': {

@@ -113,6 +113,17 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * Balance check (automated player, 20 days, 6 seeds): product research pays clearly (+19 % net worth); quality and process research are near neutral for a demand-limited player and pay back within days once the line is the bottleneck.
 * Saves are version 4; v3 saves start with nothing researched.
 
+## Multiple plants (milestone 5)
+
+* `state.plants[]` (index = plant id). Each `PlantState` has its own `stations`, `rework` bay, `allowedModels` and `constructionRemaining`. Shared company-wide: cash, the parts warehouse (`inventory`, shipments), the finished-vehicle `yard`, the production `plan`, technicians, research and the market. `Vehicle.plant` records where it is built.
+* `BALANCE.plants.sites`: Riverside (start), Eastgate ($320k, reputation 60), Harborview ($480k, reputation 75). `buildPlant` pays the site (capital spending) and starts a 2-day construction; one at a time. A plant under construction does no work. Each operating plant adds `overhead.dailyBase` per day.
+* Stamping in each plant takes the first plan job whose model is in that plant's `allowedModels` (`setPlantModel`, at least one model stays allowed). Dedicated plants avoid model changeovers.
+* Staff: operators and inspectors are hired company-wide and assigned per plant station (`assignOperator` with `plant`; Quality Inspection takes inspectors). New inspectors auto-assign to the inspection line that needs them most. Detection rate is per plant.
+* Station selectors take an optional `plant` (default 0): `stationStatus`, `staffFactor`, `queueCapacity`, `changeoverMinutes`, `breakdownRisk`, `detectionRate`, `nextUpgradeCost`… Per-station commands (`repair`, `scheduleMaintenance`, `upgradeCapacity`, `upgradeReliability`) take an optional `plant`. Alerts carry the plant in their `openStation` actions.
+* UI: a plant switcher over the factory view (status dots, construction countdown); the station panel, Staff tab and Upgrades tab follow the selected plant; the Upgrades tab lists plants and builds the next site.
+* Balance check (automated player, 25 days, 6 seeds): building the second plant around day 10 ends at +45 % net worth.
+* Saves are version 5; v4 saves become a single Riverside plant with every inspector assigned to it.
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts

@@ -78,7 +78,7 @@ describe('(b) missing materials stop the correct station', () => {
       healAll(st);
       assertInvariants(st);
     });
-    const fin = s.stations.final;
+    const fin = s.plants[0].stations.final;
     const mat = fin.issues.find((i) => i.kind === 'materials');
     expect(mat, JSON.stringify(fin.issues)).toBeDefined();
     expect(mat!.text).toMatch(/Powertrain/);
@@ -86,7 +86,7 @@ describe('(b) missing materials stop the correct station', () => {
     expect(fin.slots.every((sl) => sl === null)).toBe(true);
     expect(fin.queue.length).toBe(1);
     for (const id of ['stamping', 'body', 'paint', 'inspection'] as const) {
-      expect(s.stations[id].issues.some((i) => i.kind === 'materials')).toBe(false);
+      expect(s.plants[0].stations[id].issues.some((i) => i.kind === 'materials')).toBe(false);
     }
     // Nothing consumed at final and no vehicle passed it.
     expect(s.inventory.interior.qty).toBe(1);
@@ -96,7 +96,7 @@ describe('(b) missing materials stop the correct station', () => {
 
     // Buying the powertrain resolves it.
     mustOk(s, { type: 'purchase', supplierId: 'apex', component: 'powertrain', quantity: 1 });
-    runUntil(s, (st) => st.stats.vehiclesBuilt === 1 || st.rework.queue.length + (st.rework.slot ? 1 : 0) > 0, 600, healAll, 'build');
+    runUntil(s, (st) => st.stats.vehiclesBuilt === 1 || st.plants[0].rework.queue.length + (st.plants[0].rework.slot ? 1 : 0) > 0, 600, healAll, 'build');
     expect(s.inventory.powertrain.qty).toBe(0);
   });
 });
@@ -107,10 +107,10 @@ describe('(c) equipment failure', () => {
     healAll(s);
     staffLine(s);
     mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
-    const activeSlot = (st: GameState, id: 'body' | 'paint') => st.stations[id].slots.find((sl) => sl && !sl.done && sl.progress > 0) ?? null;
+    const activeSlot = (st: GameState, id: 'body' | 'paint') => st.plants[0].stations[id].slots.find((sl) => sl && !sl.done && sl.progress > 0) ?? null;
     runUntil(s, (st) => activeSlot(st, 'body') !== null && activeSlot(st, 'paint') !== null, 400, healAll, 'body+paint active');
 
-    const body = s.stations.body;
+    const body = s.plants[0].stations.body;
     body.broken = true;
     const bodySlot = activeSlot(s, 'body')!;
     const frozenVehicle = bodySlot.vehicleId;
@@ -120,7 +120,7 @@ describe('(c) equipment failure', () => {
     const paintProgress = paintSlot.progress;
 
     ticks(s, 30, (st) => {
-      st.stations.paint.condition = 100;
+      st.plants[0].stations.paint.condition = 100;
       assertInvariants(st);
     });
     expect(body.issues.some((i) => i.kind === 'broken')).toBe(true);
@@ -129,7 +129,7 @@ describe('(c) equipment failure', () => {
     expect(bs.progress).toBe(frozenProgress);
     // Downstream (paint) kept working on its vehicle.
     const pv = s.vehicles[paintVehicle];
-    const ps = s.stations.paint.slots.find((sl) => sl && sl.vehicleId === paintVehicle);
+    const ps = s.plants[0].stations.paint.slots.find((sl) => sl && sl.vehicleId === paintVehicle);
     expect(pv.stage !== 'paint' || (ps && ps.progress > paintProgress)).toBe(true);
 
     // Repair on a healthy station is refused.
@@ -192,7 +192,7 @@ describe('(d) rework does not duplicate vehicles', () => {
     };
     runUntil(
       s,
-      (st) => st.yard.length === 3 && !st.rework.slot && st.rework.queue.length === 0,
+      (st) => st.yard.length === 3 && !st.plants[0].rework.slot && st.plants[0].rework.queue.length === 0,
       2 * 1440,
       watch,
       '3 vehicles finished',
@@ -253,14 +253,14 @@ describe('(j) full downstream queue blocks upstream', () => {
   it('paint unstaffed: paint queue fills, body holds its done vehicle with a downstream issue', () => {
     const s = createInitialState(SEED);
     healAll(s);
-    expect(s.stations.paint.assigned).toBe(0);
+    expect(s.plants[0].stations.paint.assigned).toBe(0);
     mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 3 });
     ticks(s, 500, (st) => {
       healAll(st);
       assertInvariants(st);
     });
-    const paint = s.stations.paint;
-    const body = s.stations.body;
+    const paint = s.plants[0].stations.paint;
+    const body = s.plants[0].stations.body;
     expect(paint.queue.length).toBe(queueCapacity(s, 'paint'));
     expect(paint.issues.some((i) => i.kind === 'staff')).toBe(true);
     const doneSlot = body.slots.find((sl) => sl && sl.done);
@@ -275,12 +275,12 @@ describe('(j) full downstream queue blocks upstream', () => {
     // Staffing paint releases the jam; vehicles flow, still no duplicates.
     mustOk(s, { type: 'hire', role: 'operator', count: 1 });
     mustOk(s, { type: 'assignOperator', station: 'paint', delta: 1 });
-    runUntil(s, (st) => !st.stations.body.slots.some((sl) => sl && sl.done), 200, (st) => {
+    runUntil(s, (st) => !st.plants[0].stations.body.slots.some((sl) => sl && sl.done), 200, (st) => {
       healAll(st);
       assertInvariants(st);
     });
     expect(progressFrozen).toBe(2);
-    expect(s.stations.body.issues.some((i) => i.kind === 'downstream')).toBe(false);
+    expect(s.plants[0].stations.body.issues.some((i) => i.kind === 'downstream')).toBe(false);
   });
 });
 
@@ -321,7 +321,7 @@ describe('initial state', () => {
     expect(s.time).toBe(BALANCE.time.startMinute);
     expect(s.orders.filter((o) => o.status === 'offered').length).toBe(1);
     expect(s.orders[0].quantity).toBe(BALANCE.start.firstOrder.quantity);
-    for (const id of STATION_IDS) expect(s.stations[id].condition).toBe(BALANCE.start.stationCondition[id]);
+    for (const id of STATION_IDS) expect(s.plants[0].stations[id].condition).toBe(BALANCE.start.stationCondition[id]);
     expect(checkInvariants(s)).toEqual([]);
     expect(JSON.stringify(createInitialState(SEED))).toBe(JSON.stringify(s));
   });

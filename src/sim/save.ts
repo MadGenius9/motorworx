@@ -1,4 +1,4 @@
-import { COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
+import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
 import { createMarket, defaultModelConfig } from './initialState';
 import type { GameState, ModelConfig, ModelId } from './types';
 import { SAVE_VERSION } from './types';
@@ -60,6 +60,31 @@ function migrateV2(data: Record<string, unknown>): void {
   data.version = 3;
 }
 
+/**
+ * v4 → v5: multiple plants. The old single factory becomes plant 0 ("Riverside"); every inspector is
+ * assigned to it (inspection used to take all inspectors); every vehicle belongs to it.
+ */
+function migrateV4(data: Record<string, unknown>): void {
+  const stations = data.stations;
+  if (isObj(stations) && isObj(stations.inspection) && isObj(data.staff)) {
+    stations.inspection.assigned = typeof data.staff.inspector === 'number' ? data.staff.inspector : 0;
+  }
+  data.plants = [
+    {
+      id: 0,
+      name: BALANCE.plants.sites[0].name,
+      stations,
+      rework: data.rework,
+      allowedModels: [...MODEL_IDS],
+      constructionRemaining: 0,
+    },
+  ];
+  delete data.stations;
+  delete data.rework;
+  if (isObj(data.vehicles)) for (const v of Object.values(data.vehicles)) if (isObj(v)) v.plant = 0;
+  data.version = 5;
+}
+
 /** Parse and validate a saved game. Throws an Error with a readable message on bad data. */
 export function deserialize(json: string): GameState {
   if (typeof json !== 'string' || json.trim() === '') throw new Error('The save is empty.');
@@ -78,6 +103,7 @@ export function deserialize(json: string): GameState {
     if (isObj(data.finance) && isObj(data.finance.opex)) data.finance.opex.research = 0;
     data.version = 4;
   }
+  if (data.version === 4) migrateV4(data);
   if (data.version !== SAVE_VERSION) {
     throw new Error(
       `This save was made by an incompatible version of MotorWorx (save version ${String(
@@ -98,17 +124,24 @@ export function deserialize(json: string): GameState {
     const models = data.product.models;
     if (!isObj(models) || MODEL_IDS.some((m) => !isObj(models[m]))) problems.push('product.models');
   }
-  for (const k of ['product', 'inventory', 'stations', 'rework', 'vehicles', 'staff', 'finance', 'stats', 'tutorial']) {
+  if (!Array.isArray(data.plants) || data.plants.length === 0) problems.push('plants');
+  for (const k of ['product', 'inventory', 'vehicles', 'staff', 'finance', 'stats', 'tutorial']) {
     if (!isObj(data[k])) problems.push(k);
   }
   if (problems.length === 0) {
-    const stations = data.stations as Record<string, unknown>;
-    for (const id of STATION_IDS) {
-      const st = stations[id];
-      if (!isObj(st) || !Array.isArray(st.slots) || !Array.isArray(st.queue) || !isNum(st.condition)) {
-        problems.push(`stations.${id}`);
+    (data.plants as unknown[]).forEach((p, i) => {
+      if (!isObj(p) || !isObj(p.stations) || !isObj(p.rework) || !Array.isArray(p.rework.queue) || !Array.isArray(p.allowedModels)) {
+        problems.push(`plants.${i}`);
+        return;
       }
-    }
+      const stations = p.stations;
+      for (const id of STATION_IDS) {
+        const st = stations[id];
+        if (!isObj(st) || !Array.isArray(st.slots) || !Array.isArray(st.queue) || !isNum(st.condition)) {
+          problems.push(`plants.${i}.stations.${id}`);
+        }
+      }
+    });
     const inv = data.inventory as Record<string, unknown>;
     for (const c of COMPONENT_IDS) {
       const s = inv[c];
@@ -118,8 +151,6 @@ export function deserialize(json: string): GameState {
     if (!Array.isArray(fin.ledger) || !isNum(fin.startingCash) || !isObj(fin.opex) || !isObj(fin.today)) {
       problems.push('finance');
     }
-    const rw = data.rework as Record<string, unknown>;
-    if (!Array.isArray(rw.queue)) problems.push('rework');
   }
   if (problems.length > 0) {
     throw new Error(`The save file is damaged or incomplete (bad fields: ${problems.slice(0, 5).join(', ')}).`);

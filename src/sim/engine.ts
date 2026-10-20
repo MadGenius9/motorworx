@@ -16,6 +16,10 @@ import {
   formatMoney,
   formatTime,
   hazardPerActiveMinute,
+  operatingPlants,
+  plantOf,
+  plantPrefix,
+  stationOf,
   isInProduction,
   marketDemandForFinish,
   modelColorHex,
@@ -123,18 +127,19 @@ function newSlot(vehicleId: number, required: number, componentQuality: number, 
 /** Start work on a vehicle of `model` at a station: adds retooling time if the station last ran a different model. */
 function startSlot(
   state: GameState,
+  plant: number,
   id: StationId,
   st: StationState,
   v: Vehicle,
   componentQuality: number,
 ): WorkSlot {
-  const changeover = changeoverMinutes(state, id, v.model);
+  const changeover = changeoverMinutes(state, id, v.model, plant);
   if (changeover > 0) {
     const from = st.lastModel as ModelId;
     logEvent(
       state,
       'info',
-      `${stationName(id)} is retooling from ${BALANCE.models[from].className} to ${BALANCE.models[v.model].className} (+${changeover}m).`,
+      `${plantPrefix(state, plant)}${stationName(id)} is retooling from ${BALANCE.models[from].className} to ${BALANCE.models[v.model].className} (+${changeover}m).`,
     );
   }
   st.lastModel = v.model;
@@ -386,17 +391,18 @@ function ordersTick(state: GameState): void {
 
 // ───────────────────────────── stations ─────────────────────────────
 
-function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | null {
+function tryRoute(state: GameState, plant: number, id: StationId, slot: WorkSlot): string | null {
+  const P = plantOf(state, plant);
   const v = getVehicle(state, slot.vehicleId);
   if (!v) return null; // vehicle vanished (should never happen) — drop the slot
   if (id === 'inspection') {
     if (slot.outcome === 'rework') {
-      const rb = state.rework;
+      const rb = P.rework;
       const cap = BALANCE.quality.reworkQueueCapacity;
       // Gridlock breaker: the rework bay's finished car is waiting for space in the (full) inspection queue
       // while inspection is waiting for space in the (full) rework queue. Allow one extra so the loop drains.
       const gridlock =
-        rb.slot !== null && rb.slot.done && state.stations.inspection.queue.length >= queueCapacity(state, 'inspection');
+        rb.slot !== null && rb.slot.done && P.stations.inspection.queue.length >= queueCapacity(state, 'inspection', plant);
       if (rb.queue.length < cap || (gridlock && rb.queue.length < cap + 1)) {
         rb.queue.push(v.id);
         v.stage = 'rework';
@@ -416,8 +422,8 @@ function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | nul
     return 'Output blocked: finished-vehicle yard full';
   }
   const next = NEXT_STATION[id]!;
-  const dest = state.stations[next];
-  if (dest.queue.length < queueCapacity(state, next)) {
+  const dest = P.stations[next];
+  if (dest.queue.length < queueCapacity(state, next, plant)) {
     dest.queue.push(v.id);
     v.stage = next;
     return null;
@@ -425,13 +431,18 @@ function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | nul
   return `Output blocked: ${stationName(next)} queue full`;
 }
 
-function fillSlots(state: GameState, id: StationId, st: StationState): void {
+function fillSlots(state: GameState, plant: number, id: StationId, st: StationState): void {
   for (let i = 0; i < st.slots.length; i++) {
     if (st.slots[i] !== null) continue;
     if (id === 'stamping') {
-      const jobIdx = state.plan.findIndex((j) => j.started < j.quantity);
+      const allowed = plantOf(state, plant).allowedModels;
+      const jobIdx = state.plan.findIndex((j) => j.started < j.quantity && allowed.includes(j.model));
       if (jobIdx < 0) {
-        addIssue(st.issues, { kind: 'idle', text: 'No production scheduled' });
+        const other = state.plan.some((j) => j.started < j.quantity);
+        addIssue(st.issues, {
+          kind: 'idle',
+          text: other ? 'Planned jobs are for models this plant does not build' : 'No production scheduled',
+        });
         return;
       }
       const job = state.plan[jobIdx];
@@ -448,6 +459,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       const v: Vehicle = {
         id: state.nextId++,
         serial: `MX-${String(state.stats.vehiclesStarted).padStart(4, '0')}`,
+        plant,
         model: job.model,
         trim: job.trim,
         finish,
@@ -468,7 +480,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       state.vehicles[String(v.id)] = v;
       job.started++;
       if (job.started >= job.quantity) state.plan.splice(jobIdx, 1);
-      st.slots[i] = startSlot(state, 'stamping', st, v, used.quality);
+      st.slots[i] = startSlot(state, plant, 'stamping', st, v, used.quality);
     } else {
       if (st.queue.length === 0) {
         addIssue(st.issues, { kind: 'idle', text: 'Waiting for vehicles' });
@@ -489,12 +501,12 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       const used = consume(state, need);
       v.cost += used.value;
       st.queue.shift();
-      st.slots[i] = startSlot(state, id, st, v, used.quality);
+      st.slots[i] = startSlot(state, plant, id, st, v, used.quality);
     }
   }
 }
 
-function completeSlot(state: GameState, id: StationId, st: StationState, slot: WorkSlot): void {
+function completeSlot(state: GameState, plant: number, id: StationId, st: StationState, slot: WorkSlot): void {
   slot.done = true;
   st.completedTotal++;
   const v = getVehicle(state, slot.vehicleId);
@@ -502,7 +514,7 @@ function completeSlot(state: GameState, id: StationId, st: StationState, slot: W
   const Q = BALANCE.quality;
   if (id === 'inspection') {
     if (v.defect) {
-      if (chance(state, detectionRate(state))) {
+      if (chance(state, detectionRate(state, plant))) {
         slot.outcome = 'rework';
         v.defectDetected = true;
         state.stats.defectsCaught++;
@@ -526,21 +538,22 @@ function completeSlot(state: GameState, id: StationId, st: StationState, slot: W
   }
 }
 
-function breakDown(state: GameState, id: StationId, st: StationState): void {
+function breakDown(state: GameState, plant: number, id: StationId, st: StationState): void {
   st.broken = true;
   state.stats.breakdowns++;
   const R = BALANCE.equipment.repair;
   logEvent(
     state,
     'bad',
-    `${stationName(id)} broke down! Production there is stopped — repair costs ${formatMoney(R.cost)} and takes ${Math.round(
+    `${plantPrefix(state, plant)}${stationName(id)} broke down! Production there is stopped — repair costs ${formatMoney(R.cost)} and takes ${Math.round(
       R.minutes / 60,
     )}h.`,
   );
 }
 
-function tickStation(state: GameState, id: StationId): void {
-  const st = state.stations[id];
+function tickStation(state: GameState, plant: number, id: StationId): void {
+  const st = stationOf(state, id, plant);
+  const at = plantPrefix(state, plant);
   st.issues = [];
   const E = BALANCE.equipment;
 
@@ -550,11 +563,11 @@ function tickStation(state: GameState, id: StationId): void {
     if (svc.remaining <= 0) {
       if (svc.kind === 'maintenance') {
         st.condition = 100;
-        logEvent(state, 'good', `Maintenance finished: ${stationName(id)} is back to 100% condition.`);
+        logEvent(state, 'good', `Maintenance finished: ${at}${stationName(id)} is back to 100% condition.`);
       } else {
         st.broken = false;
         st.condition = Math.max(st.condition, E.repair.restoreCondition);
-        logEvent(state, 'good', `Repair finished: ${stationName(id)} is running again (${Math.round(st.condition)}% condition).`);
+        logEvent(state, 'good', `Repair finished: ${at}${stationName(id)} is running again (${Math.round(st.condition)}% condition).`);
       }
       st.service = null;
     } else {
@@ -574,17 +587,17 @@ function tickStation(state: GameState, id: StationId): void {
   for (let i = 0; i < st.slots.length; i++) {
     const slot = st.slots[i];
     if (!slot || !slot.done) continue;
-    const blocked = tryRoute(state, id, slot);
+    const blocked = tryRoute(state, plant, id, slot);
     if (blocked) addIssue(st.issues, { kind: 'downstream', text: blocked });
     else st.slots[i] = null;
   }
 
   // 2. Fill empty slots.
-  const sf = staffFactor(state, id);
+  const sf = staffFactor(state, id, plant);
   if (sf <= 0) {
     addIssue(st.issues, { kind: 'staff', text: id === 'inspection' ? 'No inspectors on staff' : 'No operators assigned' });
   } else {
-    fillSlots(state, id, st);
+    fillSlots(state, plant, id, st);
   }
 
   // 3. Work.
@@ -599,7 +612,7 @@ function tickStation(state: GameState, id: StationId): void {
       st.condition = Math.max(0, st.condition - wear);
       st.energyAccrued += S.energyPerActiveHour / 60;
       st.activeMinutesTotal++;
-      if (slot.progress >= slot.required - 1e-9) completeSlot(state, id, st, slot);
+      if (slot.progress >= slot.required - 1e-9) completeSlot(state, plant, id, st, slot);
     }
     if (sf < 1 && st.slots.some((s) => s !== null)) {
       const have = id === 'inspection' ? state.staff.inspector : st.assigned;
@@ -613,18 +626,18 @@ function tickStation(state: GameState, id: StationId): void {
 
   // 4. Breakdown roll.
   if (worked) {
-    if (st.condition <= 0) breakDown(state, id, st);
-    else if (st.condition < E.hazardThreshold && chance(state, hazardPerActiveMinute(state, id))) breakDown(state, id, st);
+    if (st.condition <= 0) breakDown(state, plant, id, st);
+    else if (st.condition < E.hazardThreshold && chance(state, hazardPerActiveMinute(state, id, plant))) breakDown(state, plant, id, st);
   }
 }
 
-function tickRework(state: GameState): void {
-  const rb = state.rework;
+function tickRework(state: GameState, plant: number): void {
+  const rb = plantOf(state, plant).rework;
   rb.issues = [];
   const Q = BALANCE.quality;
   if (rb.slot && rb.slot.done) {
-    const insp = state.stations.inspection;
-    if (insp.queue.length < queueCapacity(state, 'inspection')) {
+    const insp = stationOf(state, 'inspection', plant);
+    if (insp.queue.length < queueCapacity(state, 'inspection', plant)) {
       const v = getVehicle(state, rb.slot.vehicleId);
       if (v) {
         insp.queue.push(v.id);
@@ -791,11 +804,14 @@ function midnight(state: GameState): void {
   const payroll = dailyPayroll(state);
   postCash(state, 'payroll', `Payroll — day ${endedDay}`, -payroll);
   let energy = 0;
-  for (const id of STATION_IDS) {
-    energy += state.stations[id].energyAccrued;
-    state.stations[id].energyAccrued = 0;
+  for (const p of state.plants) {
+    for (const id of STATION_IDS) {
+      energy += p.stations[id].energyAccrued;
+      p.stations[id].energyAccrued = 0;
+    }
   }
-  const utilities = Math.round(BALANCE.overhead.dailyBase + energy);
+  const sites = operatingPlants(state).length;
+  const utilities = Math.round(BALANCE.overhead.dailyBase * sites + energy);
   postCash(state, 'utilities', `Site overhead & energy — day ${endedDay}`, -utilities);
 
   const f = state.finance;
@@ -877,12 +893,22 @@ export function step(state: GameState): void {
   state.time += 1;
   receiveShipments(state);
   researchTick(state);
-  tickStation(state, 'inspection');
-  tickRework(state);
-  tickStation(state, 'final');
-  tickStation(state, 'paint');
-  tickStation(state, 'body');
-  tickStation(state, 'stamping');
+  for (const p of state.plants) {
+    if (p.constructionRemaining > 0) {
+      p.constructionRemaining -= 1;
+      if (p.constructionRemaining <= 0) {
+        p.constructionRemaining = 0;
+        logEvent(state, 'good', `${p.name} plant is finished — staff its stations to start building.`);
+      }
+      continue;
+    }
+    tickStation(state, p.id, 'inspection');
+    tickRework(state, p.id);
+    tickStation(state, p.id, 'final');
+    tickStation(state, p.id, 'paint');
+    tickStation(state, p.id, 'body');
+    tickStation(state, p.id, 'stamping');
+  }
   if (state.time % BALANCE.market.checkEveryMinutes === 0) marketSales(state);
   ordersTick(state);
   if (state.time % MPD === 0) midnight(state);

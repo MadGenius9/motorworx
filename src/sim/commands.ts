@@ -5,6 +5,7 @@
 import { BALANCE, COMPONENT_IDS, FINISH_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
 import type { Command, CommandResult } from './commandTypes';
 import { allocateReservations, deliverOrderNow } from './engine';
+import { newPlant } from './initialState';
 import { logEvent, postCash } from './ledger';
 import {
   componentName,
@@ -15,6 +16,14 @@ import {
   nextUpgradeCost,
   nextWarehouseCost,
   orderProgress,
+  assignedInspectors,
+  buildPlantBlocker,
+  nextPlantSite,
+  plantOf,
+  plantPrefix,
+  stationOf,
+  unassignedFor,
+  unassignedInspectors,
   researchBlocker,
   stationName,
   isModel,
@@ -35,6 +44,27 @@ const ROLES: StaffRole[] = ['operator', 'inspector', 'technician'];
 
 function isStation(id: unknown): id is StationId {
   return typeof id === 'string' && (STATION_IDS as readonly string[]).includes(id);
+}
+
+/** Resolves an optional plant index; returns an error message for a bad or unbuilt plant. */
+function resolvePlant(state: GameState, plant: number | undefined): { plant: number; at: string } | string {
+  const p = plant ?? 0;
+  if (!Number.isInteger(p) || p < 0 || p >= state.plants.length) return 'Unknown plant.';
+  return { plant: p, at: plantPrefix(state, p) };
+}
+
+/** Assigns `n` inspectors to the plants that need them most (operating plants first). */
+function autoAssignInspectors(state: GameState, n: number): void {
+  for (let k = 0; k < n; k++) {
+    const order = [...state.plants].sort((a, b) => {
+      const op = Number(a.constructionRemaining > 0) - Number(b.constructionRemaining > 0);
+      if (op !== 0) return op;
+      const ra = a.stations.inspection.assigned / (BALANCE.stations.inspection.staffPerSlot * a.stations.inspection.slots.length);
+      const rb = b.stations.inspection.assigned / (BALANCE.stations.inspection.staffPerSlot * b.stations.inspection.slots.length);
+      return ra - rb || a.id - b.id;
+    });
+    order[0].stations.inspection.assigned += 1;
+  }
 }
 
 function findOrder(state: GameState, orderId: number): SalesOrder | undefined {
@@ -203,6 +233,8 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (noCash) return noCash;
       postCash(state, 'hiring', `Hired ${cmd.count} ${cmd.count === 1 ? info.name : info.plural}`, -cost);
       state.staff[cmd.role] += cmd.count;
+      // New inspectors go straight to the inspection line that needs them most.
+      if (cmd.role === 'inspector') autoAssignInspectors(state, cmd.count);
       return ok(
         `Hired ${cmd.count} ${cmd.count === 1 ? info.name.toLowerCase() : info.plural.toLowerCase()} (${formatMoney(cost)} fee, ${formatMoney(
           info.dailyWage * cmd.count,
@@ -224,22 +256,32 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (noCash) return noCash;
       postCash(state, 'severance', `Severance: ${info.name}`, -severance);
       state.staff[cmd.role] -= 1;
+      if (cmd.role === 'inspector' && unassignedInspectors(state) <= 0 && assignedInspectors(state) > state.staff.inspector) {
+        // Take an inspector off the plant that has the most.
+        const from = [...state.plants].sort((a, b) => b.stations.inspection.assigned - a.stations.inspection.assigned)[0];
+        from.stations.inspection.assigned -= 1;
+      }
       const note = cmd.role === 'inspector' && state.staff.inspector === 0 ? ' Inspection is now unstaffed — no cars can pass it.' : '';
       return ok(`Dismissed one ${info.name.toLowerCase()} (severance ${formatMoney(severance)}).${note}`);
     }
     case 'assignOperator': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
-      if (cmd.station === 'inspection') return fail('Quality Inspection is staffed by inspectors, not operators.');
-      const st = state.stations[cmd.station];
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      const st = stationOf(state, cmd.station, pr.plant);
+      const where = `${pr.at}${stationName(cmd.station)}`;
+      const role = cmd.station === 'inspection' ? 'inspector' : 'operator';
       if (cmd.delta === 1) {
-        if (unassignedOperators(state) <= 0) return fail('No free operators. Hire more or unassign one elsewhere.');
+        if (unassignedFor(state, cmd.station) <= 0) {
+          return fail(`No free ${role}s. Hire more or move one from another station or plant.`);
+        }
         st.assigned += 1;
-        return ok(`${stationName(cmd.station)} now has ${st.assigned} operator(s).`);
+        return ok(`${where} now has ${st.assigned} ${role}(s).`);
       }
       if (cmd.delta === -1) {
-        if (st.assigned <= 0) return fail(`${stationName(cmd.station)} has no operators to remove.`);
+        if (st.assigned <= 0) return fail(`${where} has no ${role}s to remove.`);
         st.assigned -= 1;
-        return ok(`${stationName(cmd.station)} now has ${st.assigned} operator(s).`);
+        return ok(`${where} now has ${st.assigned} ${role}(s).`);
       }
       return fail('Invalid assignment change.');
     }
@@ -247,62 +289,74 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
     // ─────────────── Equipment ───────────────
     case 'scheduleMaintenance': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
-      const st = state.stations[cmd.station];
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      const st = stationOf(state, cmd.station, pr.plant);
+      const sname = `${pr.at}${stationName(cmd.station)}`;
       const M = BALANCE.equipment.maintenance;
-      if (st.broken) return fail(`${stationName(cmd.station)} is broken — it needs a repair, not maintenance.`);
-      if (st.service) return fail(`${stationName(cmd.station)} is already being serviced.`);
+      if (st.broken) return fail(`${sname} is broken — it needs a repair, not maintenance.`);
+      if (st.service) return fail(`${sname} is already being serviced.`);
       if (freeTechnicians(state) <= 0) return fail('No free technician. Hire one or wait for the current job to finish.');
       const noCash = needCash(state, M.cost, 'maintenance');
       if (noCash) return noCash;
-      postCash(state, 'maintenance', `Maintenance: ${stationName(cmd.station)}`, -M.cost);
+      postCash(state, 'maintenance', `Maintenance: ${sname}`, -M.cost);
       st.service = { kind: 'maintenance', remaining: M.minutes, total: M.minutes, cost: M.cost };
-      logEvent(state, 'info', `Maintenance started on ${stationName(cmd.station)} (${Math.round(M.minutes / 60)}h).`);
-      return ok(`Maintenance started on ${stationName(cmd.station)} — production pauses there for ${M.minutes} minutes.`);
+      logEvent(state, 'info', `Maintenance started on ${sname} (${Math.round(M.minutes / 60)}h).`);
+      return ok(`Maintenance started on ${sname} — production pauses there for ${M.minutes} minutes.`);
     }
     case 'repair': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
-      const st = state.stations[cmd.station];
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      const st = stationOf(state, cmd.station, pr.plant);
+      const sname = `${pr.at}${stationName(cmd.station)}`;
       const R = BALANCE.equipment.repair;
-      if (!st.broken) return fail(`${stationName(cmd.station)} is not broken.`);
-      if (st.service) return fail(`${stationName(cmd.station)} is already being repaired.`);
+      if (!st.broken) return fail(`${sname} is not broken.`);
+      if (st.service) return fail(`${sname} is already being repaired.`);
       if (freeTechnicians(state) <= 0) return fail('No free technician. Hire one or wait for the current job to finish.');
       const noCash = needCash(state, R.cost, 'the repair');
       if (noCash) return noCash;
-      postCash(state, 'repair', `Repair: ${stationName(cmd.station)}`, -R.cost);
+      postCash(state, 'repair', `Repair: ${sname}`, -R.cost);
       st.service = { kind: 'repair', remaining: R.minutes, total: R.minutes, cost: R.cost };
-      logEvent(state, 'info', `Repair started on ${stationName(cmd.station)} (${Math.round(R.minutes / 60)}h).`);
-      return ok(`Repair started on ${stationName(cmd.station)} — back in ${Math.round(R.minutes / 60)}h.`);
+      logEvent(state, 'info', `Repair started on ${sname} (${Math.round(R.minutes / 60)}h).`);
+      return ok(`Repair started on ${sname} — back in ${Math.round(R.minutes / 60)}h.`);
     }
 
     // ─────────────── Upgrades ───────────────
     case 'upgradeCapacity': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
-      const cost = nextUpgradeCost(state, 'capacity', cmd.station);
-      if (cost === null) return fail(`${stationName(cmd.station)} capacity is already at the maximum level.`);
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      const sname = `${pr.at}${stationName(cmd.station)}`;
+      const cost = nextUpgradeCost(state, 'capacity', cmd.station, pr.plant);
+      if (cost === null) return fail(`${sname} capacity is already at the maximum level.`);
       const noCash = needCash(state, cost, 'the capacity upgrade');
       if (noCash) return noCash;
-      const st = state.stations[cmd.station];
-      postCash(state, 'upgrade', `Capacity upgrade: ${stationName(cmd.station)} level ${st.capacityLevel + 1}`, -cost);
+      const st = stationOf(state, cmd.station, pr.plant);
+      postCash(state, 'upgrade', `Capacity upgrade: ${sname} level ${st.capacityLevel + 1}`, -cost);
       st.capacityLevel += 1;
       st.slots.push(null);
-      logEvent(state, 'good', `${stationName(cmd.station)} expanded to ${st.slots.length} work slots.`);
+      logEvent(state, 'good', `${sname} expanded to ${st.slots.length} work slots.`);
       return ok(
-        `${stationName(cmd.station)} now has ${st.slots.length} work slots — staff it with ${
+        `${sname} now has ${st.slots.length} work slots — staff it with ${
           BALANCE.stations[cmd.station].staffPerSlot * st.slots.length
         } ${cmd.station === 'inspection' ? 'inspectors' : 'operators'} for full speed.`,
       );
     }
     case 'upgradeReliability': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
-      const cost = nextUpgradeCost(state, 'reliability', cmd.station);
-      if (cost === null) return fail(`${stationName(cmd.station)} reliability is already at the maximum level.`);
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      const sname = `${pr.at}${stationName(cmd.station)}`;
+      const cost = nextUpgradeCost(state, 'reliability', cmd.station, pr.plant);
+      if (cost === null) return fail(`${sname} reliability is already at the maximum level.`);
       const noCash = needCash(state, cost, 'the reliability upgrade');
       if (noCash) return noCash;
-      const st = state.stations[cmd.station];
-      postCash(state, 'upgrade', `Reliability upgrade: ${stationName(cmd.station)} level ${st.reliabilityLevel + 1}`, -cost);
+      const st = stationOf(state, cmd.station, pr.plant);
+      postCash(state, 'upgrade', `Reliability upgrade: ${sname} level ${st.reliabilityLevel + 1}`, -cost);
       st.reliabilityLevel += 1;
-      logEvent(state, 'good', `${stationName(cmd.station)} reliability upgraded to level ${st.reliabilityLevel}.`);
-      return ok(`${stationName(cmd.station)} reliability is now level ${st.reliabilityLevel}: less wear, fewer breakdowns.`);
+      logEvent(state, 'good', `${sname} reliability upgraded to level ${st.reliabilityLevel}.`);
+      return ok(`${sname} reliability is now level ${st.reliabilityLevel}: less wear, fewer breakdowns.`);
     }
     case 'upgradeWarehouse': {
       const cost = nextWarehouseCost(state);
@@ -313,6 +367,34 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       state.warehouseLevel += 1;
       logEvent(state, 'good', `Warehouse expanded: ${warehouseCapacity(state)} component spaces.`);
       return ok(`Warehouse expanded to ${warehouseCapacity(state)} component spaces and a bigger yard.`);
+    }
+
+    // ─────────────── Plants ───────────────
+    case 'buildPlant': {
+      const site = nextPlantSite(state);
+      const blocker = buildPlantBlocker(state);
+      if (!site || blocker) return fail(blocker ?? 'No site available.');
+      postCash(state, 'upgrade', `New plant: ${site.name}`, -site.cost);
+      state.plants.push(newPlant(site.index, site.name, BALANCE.plants.constructionMinutes));
+      logEvent(
+        state,
+        'good',
+        `Construction started on the ${site.name} plant — ready in ${Math.round(BALANCE.plants.constructionMinutes / 1440)} days.`,
+      );
+      return ok(`Building the ${site.name} plant (${formatMoney(site.cost)}). Hire staff for it while it is built.`);
+    }
+    case 'setPlantModel': {
+      const pr = resolvePlant(state, cmd.plant);
+      if (typeof pr === 'string') return fail(pr);
+      if (!isModel(cmd.model)) return fail('Unknown model.');
+      const p = plantOf(state, pr.plant);
+      const has = p.allowedModels.includes(cmd.model);
+      if (cmd.allowed && !has) p.allowedModels.push(cmd.model);
+      if (!cmd.allowed && has) {
+        if (p.allowedModels.length <= 1) return fail(`${p.name} must be allowed to build at least one model.`);
+        p.allowedModels = p.allowedModels.filter((m) => m !== cmd.model);
+      }
+      return ok(`${p.name} ${cmd.allowed ? 'will' : 'will not'} start ${modelName(state, cmd.model)} builds.`);
     }
 
     // ─────────────── Product ───────────────

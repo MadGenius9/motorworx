@@ -7,6 +7,7 @@ import type { StationId } from './sim/types';
 import { AlertBar } from './ui/AlertBar';
 import { isTypingTarget } from './ui/format';
 import { GameOverModal } from './ui/GameOverModal';
+import { PlantSwitcher } from './ui/PlantSwitcher';
 import { SidePanel } from './ui/SidePanel';
 import { StationPanel } from './ui/StationPanel';
 import { Toasts, type UiToast } from './ui/Toasts';
@@ -21,6 +22,12 @@ export default function App({ controller }: { controller: IGameController }) {
   const state = controller.state;
   const [tab, setTab] = useState<PanelTab>('orders');
   const [selected, setSelected] = useState<StationId | null>(null);
+  const [plantIdx, setPlantIdx] = useState(0);
+  const plant = Math.min(plantIdx, state.plants.length - 1);
+  const selectPlant = useCallback((p: number) => {
+    setPlantIdx(p);
+    setSelected(null);
+  }, []);
   const [toasts, setToasts] = useState<UiToast[]>([]);
   const toastId = useRef(0);
 
@@ -43,7 +50,10 @@ export default function App({ controller }: { controller: IGameController }) {
   const runAction = useCallback(
     (a: AlertAction) => {
       if (a.kind === 'openTab') setTab(a.tab);
-      else if (a.kind === 'openStation') setSelected(a.station);
+      else if (a.kind === 'openStation') {
+        setPlantIdx(a.plant ?? 0);
+        setSelected(a.station);
+      }
       else dispatch(a.command);
     },
     [dispatch],
@@ -58,6 +68,7 @@ export default function App({ controller }: { controller: IGameController }) {
     if (lastState.current !== state) {
       lastState.current = state;
       setSelected(null);
+      setPlantIdx(0);
     }
   }, [state]);
 
@@ -92,6 +103,8 @@ export default function App({ controller }: { controller: IGameController }) {
     openTab: setTab,
     selectStation: setSelected,
     selectedStation: selected,
+    plant,
+    selectPlant,
     notify,
   };
 
@@ -105,11 +118,13 @@ export default function App({ controller }: { controller: IGameController }) {
             <div className="canvas-host">
               <FactoryCanvas
                 controller={controller}
+                plant={plant}
                 selectedStation={selected}
                 onSelectStation={setSelected}
                 onOpenTab={setTab}
               />
             </div>
+            <PlantSwitcher />
             {selected && <StationPanel id={selected} onClose={() => setSelected(null)} />}
             <TutorialCard />
           </div>

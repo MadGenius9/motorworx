@@ -384,8 +384,25 @@ export const BALANCE = {
   },
 
   overhead: {
-    /** Fixed daily site costs (rent, utilities base, insurance). Billed at midnight with energy. */
+    /** Fixed daily site costs per operating plant (rent, utilities base, insurance). Billed at midnight with energy. */
     dailyBase: 3600,
+  },
+
+  /**
+   * Plants. The company starts with the first site; more can be bought. Every plant has its own five stations,
+   * rework bay, staffing and upgrades. Cash, the parts warehouse, the finished-vehicle yard, the production plan
+   * and maintenance technicians are shared.
+   */
+  plants: {
+    sites: [
+      { name: 'Riverside', cost: 0, minReputation: 0 },
+      { name: 'Eastgate', cost: 320_000, minReputation: 60 },
+      { name: 'Harborview', cost: 480_000, minReputation: 75 },
+    ],
+    /** Game minutes to build a new plant before it can run. */
+    constructionMinutes: 2 * 1440,
+    /** Condition of a new plant's equipment. */
+    newCondition: 100,
   },
 
   orders: {

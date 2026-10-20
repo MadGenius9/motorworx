@@ -8,6 +8,8 @@ import { FactoryRenderer } from './FactoryRenderer';
 export interface FactoryCanvasProps {
   controller: IGameController;
   selectedStation: StationId | null;
+  /** Plant to show (default 0). */
+  plant?: number;
   onSelectStation(id: StationId | null): void;
   onOpenTab(tab: PanelTab): void;
 }
@@ -73,6 +75,7 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
     });
     rendererRef.current = renderer;
     renderer.setSelected(propsRef.current.selectedStation);
+    renderer.setPlant(propsRef.current.plant ?? 0);
     const measure = () => {
       const r = container.getBoundingClientRect();
       renderer.resize(r.width, r.height);
@@ -91,6 +94,11 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
   useEffect(() => {
     rendererRef.current?.setSelected(selectedStation);
   }, [selectedStation]);
+
+  const plant = props.plant ?? 0;
+  useEffect(() => {
+    rendererRef.current?.setPlant(plant);
+  }, [plant]);
 
   return (
     <div ref={containerRef} style={containerStyle} className="factory-canvas">

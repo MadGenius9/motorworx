@@ -58,15 +58,16 @@ export function runUntil(
 
 /** Keeps every station above the breakdown hazard threshold so a test is not disturbed by random breakdowns. */
 export function healAll(s: GameState): void {
-  for (const id of STATION_IDS) s.stations[id].condition = 100;
+  for (const p of s.plants) for (const id of STATION_IDS) p.stations[id].condition = 100;
 }
 
 /** A sensible player repairs broken stations. */
 export function autoRepair(s: GameState): void {
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id });
-  }
+  for (const p of s.plants)
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id, plant: p.id });
+    }
 }
 
 /** Hire 3 operators and staff Paint (1) and Final Assembly (2), as the tutorial asks. */
@@ -178,16 +179,34 @@ export function checkInvariants(s: GameState): string[] {
     else loc.set(id, where);
     if (!s.vehicles[id]) errs.push(`unknown vehicle ${id} at ${where}`);
   };
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    st.queue.forEach((v) => place(v, `${id}.queue`));
-    st.slots.forEach((sl) => sl && place(sl.vehicleId, `${id}.slot`));
-    if (st.queue.length > queueCapacity(s, id)) errs.push(`${id} queue ${st.queue.length} > cap ${queueCapacity(s, id)}`);
-    if (st.slots.length !== 1 + st.capacityLevel) errs.push(`${id} slots ${st.slots.length} != 1+capacityLevel`);
+  const plantAt = new Map<number, number>();
+  for (const p of s.plants) {
+    const at = (id: number, where: string) => {
+      place(id, where);
+      plantAt.set(id, p.id);
+    };
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      st.queue.forEach((v) => at(v, `${id}.queue`));
+      st.slots.forEach((sl) => sl && at(sl.vehicleId, `${id}.slot`));
+      if (st.queue.length > queueCapacity(s, id, p.id)) errs.push(`p${p.id} ${id} queue ${st.queue.length} > cap`);
+      if (st.slots.length !== 1 + st.capacityLevel) errs.push(`p${p.id} ${id} slots ${st.slots.length} != 1+capacityLevel`);
+      if (st.assigned < 0) errs.push(`p${p.id} ${id} negative staff`);
+    }
+    p.rework.queue.forEach((v) => at(v, 'rework.queue'));
+    if (p.rework.slot) at(p.rework.slot.vehicleId, 'rework.slot');
+    // The sim may hold one extra car to break a rework/inspection gridlock.
+    if (p.rework.queue.length > BALANCE.quality.reworkQueueCapacity + 1) errs.push(`p${p.id} rework queue over capacity`);
+    if (p.constructionRemaining > 0 && STATION_IDS.some((id) => p.stations[id].queue.length || p.stations[id].slots.some(Boolean))) {
+      errs.push(`p${p.id} works while under construction`);
+    }
   }
-  s.rework.queue.forEach((v) => place(v, 'rework.queue'));
-  if (s.rework.slot) place(s.rework.slot.vehicleId, 'rework.slot');
-  if (s.rework.queue.length > BALANCE.quality.reworkQueueCapacity) errs.push(`rework queue over capacity`);
+  // Staff assignments never exceed headcount.
+  let ops = 0;
+  let insp = 0;
+  for (const p of s.plants) for (const id of STATION_IDS) (id === 'inspection' ? (insp += p.stations[id].assigned) : (ops += p.stations[id].assigned));
+  if (ops > s.staff.operator) errs.push(`assigned operators ${ops} > ${s.staff.operator}`);
+  if (insp > s.staff.inspector) errs.push(`assigned inspectors ${insp} > ${s.staff.inspector}`);
   s.yard.forEach((v) => place(v, 'yard'));
   const yardCap = BALANCE.start.yardCapacity + s.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
   if (s.yard.length > yardCap) errs.push(`yard ${s.yard.length} > cap ${yardCap}`);
@@ -195,6 +214,8 @@ export function checkInvariants(s: GameState): string[] {
     const where = loc.get(v.id);
     if (!STAGE_OK(v.stage, where)) errs.push(`vehicle ${v.id} stage=${v.stage} but located at ${where ?? 'nowhere'}`);
     if (v.cost < -1e-6) errs.push(`vehicle ${v.id} negative cost`);
+    const pa = plantAt.get(v.id);
+    if (pa !== undefined && pa !== v.plant) errs.push(`vehicle ${v.id} of plant ${v.plant} found in plant ${pa}`);
   }
 
   // Reservations consistent.
@@ -238,14 +259,15 @@ export function mulberry32(seed: number): () => number {
  * parts just in time for scheduled and in-progress work (keeping a payroll reserve), keeps a little
  * market stock, and maintains equipment. Call every 30 game minutes.
  */
-export function competentBot(s: GameState): void {
+export function competentBot(s: GameState, maxBacklog = 6): void {
   const reserve = projectedDailyCosts(s).total * 1.2;
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id });
-    else if (!st.broken && !st.service && st.condition < 45 && s.cash > reserve + BALANCE.equipment.maintenance.cost)
-      applyCommand(s, { type: 'scheduleMaintenance', station: id });
-  }
+  for (const p of s.plants)
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id, plant: p.id });
+      else if (!st.broken && !st.service && st.condition < 45 && s.cash > reserve + BALANCE.equipment.maintenance.cost)
+        applyCommand(s, { type: 'scheduleMaintenance', station: id, plant: p.id });
+    }
   for (const o of s.orders.filter((x) => x.status === 'accepted')) {
     const p = orderProgress(s, o);
     if (p.ready) applyCommand(s, { type: 'deliverOrder', orderId: o.id });
@@ -256,7 +278,8 @@ export function competentBot(s: GameState): void {
   for (const o of s.orders.filter((x) => x.status === 'offered')) {
     const hoursLeft = (o.deadline - s.time) / 60;
     // ~2.5 h per car through the bottleneck, plus the cars already ahead of it.
-    if (queued + wip + o.quantity <= 6 && hoursLeft > (queued + wip + o.quantity) * 2.5 + 8) {
+    const lines = s.plants.filter((p) => p.constructionRemaining <= 0 && p.stations.stamping.assigned > 0).length || 1;
+    if (queued + wip + o.quantity <= maxBacklog && hoursLeft > ((queued + wip + o.quantity) * 2.5) / lines + 8) {
       applyCommand(s, { type: 'acceptOrder', orderId: o.id });
       break;
     }
@@ -280,4 +303,15 @@ export function competentBot(s: GameState): void {
     const qty = Math.min(short, affordable);
     if (qty > 0) applyCommand(s, { type: 'purchase', supplierId: 'corvan', component: c, quantity: qty });
   }
+}
+
+/** Rebuilds the pre-plants (save version 4) layout from a current save object, for migration tests. */
+export function toV4Shape(save: Record<string, any>): Record<string, any> {
+  const out = structuredClone(save);
+  out.stations = out.plants[0].stations;
+  out.rework = out.plants[0].rework;
+  delete out.plants;
+  for (const v of Object.values(out.vehicles) as Record<string, unknown>[]) delete v.plant;
+  out.version = 4;
+  return out;
 }

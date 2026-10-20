@@ -1358,3 +1358,57 @@ li.current .tut-check {
 .research-card.research-active {
   border-color: var(--blue);
 }
+
+/* Plant switcher (over the factory view) */
+.plant-switcher {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.plant-switcher button {
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 6px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.plant-switcher button:last-child {
+  border-right: none;
+}
+.plant-switcher button.active {
+  background: var(--accent);
+  color: #1b1d20;
+  font-weight: 700;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-ok {
+  background: var(--green);
+}
+.dot-warn {
+  background: var(--amber);
+}
+.dot-bad {
+  background: var(--red);
+}
+.dot-build {
+  background: var(--blue);
+}

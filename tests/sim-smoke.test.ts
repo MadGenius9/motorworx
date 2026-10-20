@@ -33,15 +33,15 @@ function checkInvariants(state: GameState) {
     where.set(id, loc);
   };
   for (const sid of STATION_IDS) {
-    const st = state.stations[sid];
+    const st = state.plants[0].stations[sid];
     st.queue.forEach((id) => put(id, `${sid}.queue`));
     st.slots.forEach((s) => s && put(s.vehicleId, `${sid}.slot`));
     for (const id of [...st.queue, ...st.slots.filter(Boolean).map((s) => s!.vehicleId)]) {
       expect(state.vehicles[id].stage).toBe(sid);
     }
   }
-  state.rework.queue.forEach((id) => put(id, 'rework.queue'));
-  if (state.rework.slot) put(state.rework.slot.vehicleId, 'rework.slot');
+  state.plants[0].rework.queue.forEach((id) => put(id, 'rework.queue'));
+  if (state.plants[0].rework.slot) put(state.plants[0].rework.slot.vehicleId, 'rework.slot');
   state.yard.forEach((id) => {
     put(id, 'yard');
     expect(state.vehicles[id].stage).toBe('finished');
@@ -77,7 +77,7 @@ describe('sim smoke', () => {
       step(s);
       if (s.time % 30 === 0) checkInvariants(s);
       // keep paint healthy so the test is about flow, not luck
-      if (s.stations.paint.broken && !s.stations.paint.service) must(s, { type: 'repair', station: 'paint' });
+      if (s.plants[0].stations.paint.broken && !s.plants[0].stations.paint.service) must(s, { type: 'repair', station: 'paint' });
     }
     expect(orderProgress(s, order).ready).toBe(true);
     expect(s.time).toBeLessThanOrEqual(order.deadline);

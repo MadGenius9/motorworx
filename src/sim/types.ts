@@ -6,14 +6,19 @@ import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } fro
 
 export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
 
-/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models, v3 rivals, v4 research. */
-export const SAVE_VERSION = 4;
+/**
+ * Bump when the saved shape changes; add a migration in save.ts.
+ * v2 vehicle models, v3 rivals, v4 research, v5 multiple plants.
+ */
+export const SAVE_VERSION = 5;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
 
 export interface Vehicle {
   id: number;
+  /** Plant that built (or is building) the vehicle. */
+  plant: number;
   /** Human-readable serial e.g. "MX-0007". */
   serial: string;
   model: ModelId;
@@ -90,7 +95,7 @@ export interface StationState {
   condition: number;
   broken: boolean;
   service: ServiceJob | null;
-  /** Operators assigned (unused for inspection, which uses all inspectors). */
+  /** Staff assigned: operators, or inspectors at Quality Inspection. */
   assigned: number;
   issues: StationIssue[];
   /** Model of the last job started here (null before the first job); a different model costs changeover time. */
@@ -100,6 +105,18 @@ export interface StationState {
   /** Lifetime counters. */
   completedTotal: number;
   activeMinutesTotal: number;
+}
+
+export interface PlantState {
+  /** Index into BALANCE.plants.sites. */
+  id: number;
+  name: string;
+  stations: Record<StationId, StationState>;
+  rework: ReworkBayState;
+  /** Models this plant's stamping will start. Restricting a plant to one model avoids retooling. */
+  allowedModels: ModelId[];
+  /** Minutes until construction finishes (0 = operating). */
+  constructionRemaining: number;
 }
 
 export interface ReworkBayState {
@@ -338,8 +355,8 @@ export interface GameState {
   inventory: Record<ComponentId, ComponentStock>;
   shipments: Shipment[];
   warehouseLevel: number;
-  stations: Record<StationId, StationState>;
-  rework: ReworkBayState;
+  /** Plants, index = plant id. Plant 0 is the starting site. */
+  plants: PlantState[];
   /** All vehicles, keyed by id. Delivered/sold vehicles are pruned beyond a history limit. */
   vehicles: Record<string, Vehicle>;
   /** Finished vehicle ids in the yard, oldest first. */

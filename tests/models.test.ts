@@ -189,7 +189,7 @@ describe('changeover between models', () => {
       () => starts.length >= 3,
       2 * 1440,
       (st) => {
-        const slot = st.stations.stamping.slots[0];
+        const slot = st.plants[0].stations.stamping.slots[0];
         if (slot && slot.vehicleId !== lastVehicle) {
           lastVehicle = slot.vehicleId;
           const v = st.vehicles[String(slot.vehicleId)];
@@ -204,7 +204,7 @@ describe('changeover between models', () => {
     expect(starts[1].changeover).toBe(0); // same model back to back
     expect(starts[2].changeover).toBe(BALANCE.changeover.minutes.stamping);
     expect(starts[2].required).toBe(cycleMinutes('stamping', 'suv', 'economy', 'solid') + BALANCE.changeover.minutes.stamping);
-    expect(s.stations.stamping.lastModel).toBe('suv');
+    expect(s.plants[0].stations.stamping.lastModel).toBe('suv');
   });
 });
 
@@ -261,6 +261,7 @@ describe('orders and market respect the model', () => {
     s.vehicles[String(id)] = {
       ...structuredClone(Object.values(s.vehicles)[0] ?? ({} as never)),
       id,
+      plant: 0,
       serial: 'MX-TEST',
       model: 'suv',
       trim: 'economy',

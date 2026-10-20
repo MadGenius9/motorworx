@@ -41,6 +41,8 @@ You are not alone: three rival makers (Vantor, Halberd, Sunline) compete for ope
 
 The **R&D** tab runs one research project at a time: faster stations, fewer defects, cheaper builds, more dealer orders and more appealing cars. Each project costs cash up front and finishes after some game hours.
 
+When reputation and cash allow, build a second (and third) plant from **Upgrades**. Each plant has its own line, staff and upgrades, and shares cash, parts, the yard and the production plan. Switch plants with the tabs above the factory, and dedicate a plant to one model (Stamping panel) to avoid retooling.
+
 Controls: drag to pan, mouse wheel to zoom, click a station for details and actions. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout
