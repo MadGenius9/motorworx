@@ -82,13 +82,11 @@ async function main() {
     browser = await chromium.launch({ executablePath, headless: true, args: ['--no-sandbox'] });
     const context = await browser.newContext({ viewport: { width: 1600, height: 900 } });
     const page = await context.newPage();
-    // index.html declares no icon, so Chromium probes /favicon.ico (404). Known cosmetic gap — warn, don't fail.
-    await page.route('**/favicon.ico', (route) => {
-      log('warn: browser requested /favicon.ico (index.html has no <link rel="icon">)');
-      return route.fulfill({ status: 204, body: '' });
-    });
     page.on('console', (msg) => {
-      if (msg.type() === 'error') problems.push(`console.error: ${msg.text()}`);
+      if (msg.type() !== 'error') return;
+      // index.html declares no <link rel="icon">, so Chromium probes /favicon.ico (404). Cosmetic — warn only.
+      if (/\/favicon\.ico$/.test(msg.location()?.url ?? '')) return log('warn: /favicon.ico 404 (no icon declared)');
+      problems.push(`console.error: ${msg.text()} @ ${msg.location()?.url ?? '?'}`);
     });
     page.on('pageerror', (err) => problems.push(`pageerror: ${err.message}`));
     page.on('response', (res) => {
