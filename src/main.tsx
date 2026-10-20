@@ -6,6 +6,8 @@ import './styles.css';
 
 const controller = new GameController();
 controller.start();
+// Debug handle for the browser console and automated play-tests.
+(window as unknown as { motorworx: GameController }).motorworx = controller;
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

@@ -109,7 +109,7 @@ export const BALANCE = {
       baseValue: 21_500,
       appeal: 62,
       timeMult: 1.0,
-      baseDemandPerDay: 3.5,
+      baseDemandPerDay: 2.6,
       recipe: {
         stamping: { steel: 2 },
         paint: { paint: 1 },
@@ -121,7 +121,7 @@ export const BALANCE = {
       baseValue: 33_500,
       appeal: 84,
       timeMult: 1.35,
-      baseDemandPerDay: 1.8,
+      baseDemandPerDay: 1.3,
       recipe: {
         stamping: { steel: 3 },
         paint: { paint: 2 },
@@ -259,12 +259,12 @@ export const BALANCE = {
 
   overhead: {
     /** Fixed daily site costs (rent, utilities base, insurance). Billed at midnight with energy. */
-    dailyBase: 2400,
+    dailyBase: 3600,
   },
 
   orders: {
     checkEveryMinutes: 60,
-    baseChance: 0.08,
+    baseChance: 0.07,
     chancePerReputation: 0.0012,
     maxOpenOffers: 4,
     offerLifetimeMinutes: 12 * 60,
