@@ -1103,9 +1103,9 @@ export class FactoryRenderer {
         const ph = (realT * 0.45 + i / 6) % 1;
         const x = b.x + b.w - 28 + Math.sin(i * 2.3 + realT * 1.3) * 5 + ph * 14;
         const y = b.y + 18 - ph * 46;
-        ctx.fillStyle = `rgba(110,114,120,${(0.55 * (1 - ph)).toFixed(3)})`;
+        ctx.fillStyle = `rgba(150,154,160,${(0.8 * (1 - ph)).toFixed(3)})`;
         ctx.beginPath();
-        ctx.arc(x, y, 4 + ph * 10, 0, Math.PI * 2);
+        ctx.arc(x, y, 5 + ph * 12, 0, Math.PI * 2);
         ctx.fill();
       }
     }
