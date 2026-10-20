@@ -27,6 +27,8 @@ import {
   researchBlocker,
   stationName,
   isModel,
+  kitCost,
+  kitShortfall,
   modelName,
   stockOnHand,
   trimSpec,
@@ -221,6 +223,31 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
         )}.`,
       );
       return ok(`Ordered ${cmd.quantity} × ${componentName(cmd.component)} (${formatMoney(cost)}), arriving ${formatTime(state.time + sup.leadMinutes)}.`);
+    }
+
+    case 'purchaseKit': {
+      const sup = BALANCE.suppliers.find((s) => s.id === cmd.supplierId);
+      if (!sup) return fail('Unknown supplier.');
+      if (!isModel(cmd.model) || !TRIM_IDS.includes(cmd.trim)) return fail('Unknown model or trim.');
+      if (!isPositiveInt(cmd.cars, 99)) return fail('Cars must be a whole number from 1 to 99.');
+      const kit = kitShortfall(state, cmd.model, cmd.trim, cmd.cars);
+      const units = COMPONENT_IDS.reduce((n, c) => n + (kit[c] ?? 0), 0);
+      const label = `${cmd.cars} ${vehicleLabel(state, cmd.model, cmd.trim)}`;
+      if (units === 0) return fail(`You already have (or have ordered) every part for ${label}.`);
+      const cap = warehouseCapacity(state);
+      const used = stockOnHand(state) + incomingUnits(state);
+      if (used + units > cap) {
+        return fail(`Not enough warehouse space for ${units} units: ${used}/${cap} used, room for ${Math.max(0, cap - used)} more.`);
+      }
+      const cost = kitCost(sup.id, kit);
+      const noCash = needCash(state, cost, `parts for ${label}`);
+      if (noCash) return noCash;
+      // Validated as a whole above, so every component purchase below succeeds.
+      for (const c of COMPONENT_IDS) {
+        const q = kit[c];
+        if (q) applyCommand(state, { type: 'purchase', supplierId: sup.id, component: c, quantity: q });
+      }
+      return ok(`Ordered ${units} parts for ${label} from ${sup.name} (${formatMoney(cost)}), arriving ${formatTime(state.time + sup.leadMinutes)}.`);
     }
 
     // ─────────────── Staff ───────────────

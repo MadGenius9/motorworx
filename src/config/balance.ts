@@ -403,6 +403,9 @@ export const BALANCE = {
     constructionMinutes: 2 * 1440,
     /** Condition of a new plant's equipment. */
     newCondition: 100,
+    /** Extra component storage and finished-vehicle yard spaces each additional operating plant brings. */
+    componentAddPerPlant: 40,
+    yardAddPerPlant: 8,
   },
 
   orders: {

@@ -432,12 +432,23 @@ export function freeTechnicians(state: GameState): number {
 
 // ───────────────────────────── warehouse ─────────────────────────────
 
+/** Operating plants beyond the first (each brings its own storage). */
+function extraPlants(state: GameState): number {
+  return Math.max(0, state.plants.filter((p) => p.constructionRemaining <= 0).length - 1);
+}
+
 export function warehouseCapacity(state: GameState): number {
-  return BALANCE.start.warehouseCapacity + state.warehouseLevel * BALANCE.upgrades.warehouse.componentAdd;
+  return (
+    BALANCE.start.warehouseCapacity +
+    state.warehouseLevel * BALANCE.upgrades.warehouse.componentAdd +
+    extraPlants(state) * BALANCE.plants.componentAddPerPlant
+  );
 }
 
 export function yardCapacity(state: GameState): number {
-  return BALANCE.start.yardCapacity + state.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
+  return (
+    BALANCE.start.yardCapacity + state.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd + extraPlants(state) * BALANCE.plants.yardAddPerPlant
+  );
 }
 
 export function stockOnHand(state: GameState): number {
@@ -456,6 +467,29 @@ export function incomingOf(state: GameState, c: ComponentId): number {
   let n = 0;
   for (const s of state.shipments) if (s.component === c) n += s.qty;
   return n;
+}
+
+/**
+ * Components still needed to build `cars` vehicles of a model/trim at the current finish, after counting
+ * what is on hand and on the way. Only positive shortfalls are listed.
+ */
+export function kitShortfall(state: GameState, model: ModelId, trim: TrimId, cars: number): Partial<Record<ComponentId, number>> {
+  const finish = state.product.models[model].finish[trim];
+  const out: Partial<Record<ComponentId, number>> = {};
+  for (const c of COMPONENT_IDS) {
+    let need = 0;
+    for (const st of STATION_IDS) need += (recipeFor(model, trim, st, finish, state)[c] ?? 0) * cars;
+    const short = need - state.inventory[c].qty - incomingOf(state, c);
+    if (short > 0) out[c] = short;
+  }
+  return out;
+}
+
+/** Cost of a kit shortfall at a supplier. */
+export function kitCost(supplierId: string, kit: Partial<Record<ComponentId, number>>): number {
+  let total = 0;
+  for (const c of COMPONENT_IDS) total += (supplierUnitPrice(supplierId, c) ?? 0) * (kit[c] ?? 0);
+  return total;
 }
 
 function referenceSupplier() {
@@ -913,6 +947,8 @@ export function getAlerts(state: GameState): Alert[] {
   }
 
   const yardFull = state.yard.length >= yardCapacity(state);
+  /** Stations short of parts; reported as one alert so several plants don't flood the bar. */
+  const partsWaits: { id: string; name: string; text: string; components: ComponentId[] }[] = [];
 
   for (const plant of state.plants) {
   if (plant.constructionRemaining > 0) continue;
@@ -970,17 +1006,7 @@ export function getAlerts(state: GameState): Alert[] {
     }
 
     const materials = st.issues.find((i) => i.kind === 'materials');
-    if (materials) {
-      const comps = materials.components ?? [];
-      const incoming = comps.reduce((n, c) => n + incomingOf(state, c), 0);
-      alerts.push({
-        id: `materials-${id}${sfx}`,
-        severity: 'warning',
-        title: `${name} is waiting for parts`,
-        cause: materials.text + (incoming > 0 ? ` — ${incoming} unit(s) already on the way.` : ' — nothing on order.'),
-        actions: [{ label: 'Buy parts', action: { kind: 'openTab', tab: 'suppliers' } }],
-      });
-    }
+    if (materials) partsWaits.push({ id: `materials-${id}${sfx}`, name, text: materials.text, components: materials.components ?? [] });
 
     const sf = staffFactor(state, id, pi);
     if (sf < 1 && stationHasWork(state, id, pi)) {
@@ -1037,6 +1063,31 @@ export function getAlerts(state: GameState): Alert[] {
       actions: [{ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
     });
   }
+  }
+
+  // Parts shortages
+  if (partsWaits.length > 0) {
+    const comps = [...new Set(partsWaits.flatMap((w) => w.components))];
+    const incoming = comps.reduce((n, c) => n + incomingOf(state, c), 0);
+    const onTheWay = incoming > 0 ? ` — ${incoming} unit(s) already on the way.` : ' — nothing on order.';
+    const one = partsWaits[0];
+    alerts.push(
+      partsWaits.length === 1
+        ? {
+            id: one.id,
+            severity: 'warning',
+            title: `${one.name} is waiting for parts`,
+            cause: one.text + onTheWay,
+            actions: [{ label: 'Buy parts', action: { kind: 'openTab', tab: 'suppliers' } }],
+          }
+        : {
+            id: 'materials',
+            severity: 'warning',
+            title: `${partsWaits.length} stations are waiting for parts`,
+            cause: `Short of ${comps.map((c) => componentName(c)).join(', ')} at ${partsWaits.map((w) => w.name).join(', ')}${onTheWay}`,
+            actions: [{ label: 'Buy parts', action: { kind: 'openTab', tab: 'suppliers' } }],
+          },
+    );
   }
 
   // Yard
@@ -1265,6 +1316,24 @@ export function tutorialSteps(state: GameState): TutorialStep[] {
   const final = stationOf(state, 'final').assigned;
   const scheduledForOrder = s.vehiclesStarted > 0 || state.plan.some((j) => j.orderId !== null);
 
+  // One-click parts for the first accepted order, from the dependable mid-price supplier.
+  let buyKitAction: TutorialStep['action'];
+  const firstAccepted = state.orders.find((o) => o.status === 'accepted');
+  if (firstAccepted) {
+    const cars = firstAccepted.quantity - firstAccepted.reserved.length;
+    const kit = kitShortfall(state, firstAccepted.model, firstAccepted.trim, cars);
+    const cost = kitCost(referenceSupplier().id, kit);
+    if (cost > 0 && cost <= state.cash) {
+      buyKitAction = {
+        label: `Buy parts for ${cars} cars (${formatMoney(cost)})`,
+        action: {
+          kind: 'command',
+          command: { type: 'purchaseKit', supplierId: referenceSupplier().id, model: firstAccepted.model, trim: firstAccepted.trim, cars },
+        },
+      };
+    }
+  }
+
   let staffAction: TutorialStep['action'] = { label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } };
   if (unassigned > 0 && paint === 0) {
     staffAction = { label: 'Assign to Paint', action: { kind: 'command', command: { type: 'assignOperator', station: 'paint', delta: 1 } } };
@@ -1287,7 +1356,7 @@ export function tutorialSteps(state: GameState): TutorialStep[] {
       title: 'Buy components',
       text: 'Each Economy car needs 2 steel, 1 paint, a powertrain, an interior and a wheel set. Buy what is missing from a supplier — deliveries take a few hours.',
       done: s.purchases > 0,
-      action: { label: 'Open Suppliers', action: { kind: 'openTab', tab: 'suppliers' } },
+      action: buyKitAction ?? { label: 'Open Suppliers', action: { kind: 'openTab', tab: 'suppliers' } },
     },
     {
       id: 'staff-stations',

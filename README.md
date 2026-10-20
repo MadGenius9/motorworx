@@ -29,7 +29,7 @@ npm run smoke        # builds, serves, and plays through the UI in headless Chro
 The tutorial card (bottom left) walks through the first order:
 
 1. **Orders**: accept the Northgate Motors offer.
-2. **Suppliers**: buy steel, powertrain kits, interior kits, wheel sets and paint. Deliveries take a few game hours.
+2. **Suppliers**: buy steel, powertrain kits, interior kits, wheel sets and paint. The tutorial's button (or **Parts kit** in Suppliers) buys exactly what's missing in one click. Deliveries take a few game hours.
 3. **Staff**: hire operators and assign them to Paint and Final Assembly.
 4. **Orders**: press *Schedule build* on the order.
 5. Watch the cars move through Stamping → Body Assembly → Paint → Final Assembly → Quality Inspection. Defects that inspection catches go to the rework bay.

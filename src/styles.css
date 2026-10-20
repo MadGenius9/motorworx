@@ -1412,3 +1412,9 @@ li.current .tut-check {
 .dot-build {
   background: var(--blue);
 }
+
+.kit-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}

@@ -20,6 +20,7 @@ import {
   staffFactor,
   stockOnHand,
   unlockedModels,
+  vehicleLabel,
   warehouseCapacity,
   yardCapacity,
 } from '../sim/selectors';
@@ -621,7 +622,9 @@ export class FactoryRenderer {
     const ctx = this.ctx;
     const dk = layout.dock;
     const ships = [...state.shipments].sort((a, b) => a.arrivesAt - b.arrivesAt);
-    this.panel(dk.box, 'LOADING DOCK', { kind: 'tab', tab: 'suppliers' }, ships.length ? `${ships.length} inbound` : '');
+    const hidden = Math.max(0, ships.length - dk.lanes.length);
+    const label = ships.length ? `${ships.length} inbound${hidden ? ` · ${hidden} not shown` : ''}` : '';
+    this.panel(dk.box, 'LOADING DOCK', { kind: 'tab', tab: 'suppliers' }, label);
     // Dock doors on the right edge
     const doorX = dk.box.x + dk.box.w - 14;
     for (let i = 0; i < 4; i++) {
@@ -664,13 +667,6 @@ export class FactoryRenderer {
         baseline: 'middle',
       });
     });
-    if (ships.length > dk.lanes.length) {
-      text(ctx, `+${ships.length - dk.lanes.length} more`, dk.box.x + dk.box.w - 24, dk.box.y + 16, {
-        size: 10,
-        color: COLORS.accent,
-        align: 'right',
-      });
-    }
   }
 
   private drawPlan(state: GameState, layout: FactoryLayout): void {
@@ -702,8 +698,7 @@ export class FactoryRenderer {
         ctx.fillStyle = orderColor(job.orderId);
         ctx.fillRect(r.x, r.y, 3, r.h - 2);
       }
-      const trim = BALANCE.trims[job.trim].name;
-      text(ctx, `${i + 1}. ${trim} ×${job.quantity}`, r.x + 8, r.y + r.h / 2 - 1, {
+      text(ctx, `${i + 1}. ${vehicleLabel(state, job.model, job.trim)} ×${job.quantity}`, r.x + 8, r.y + r.h / 2 - 1, {
         size: 11,
         weight: 600,
         color: COLORS.text,

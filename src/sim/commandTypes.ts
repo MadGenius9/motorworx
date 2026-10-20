@@ -17,6 +17,8 @@ export type Command =
   | { type: 'cancelJob'; jobId: number }
   // Suppliers
   | { type: 'purchase'; supplierId: string; component: ComponentId; quantity: number }
+  /** Buys from one supplier every component still missing to build `cars` vehicles (net of stock and deliveries). */
+  | { type: 'purchaseKit'; supplierId: string; model: ModelId; trim: TrimId; cars: number }
   // Staff
   | { type: 'hire'; role: StaffRole; count: number }
   | { type: 'fire'; role: StaffRole }
@@ -31,12 +33,12 @@ export type Command =
   // Upgrades
   | { type: 'upgradeCapacity'; station: StationId; plant?: number }
   | { type: 'upgradeReliability'; station: StationId; plant?: number }
+  | { type: 'upgradeWarehouse' }
   // Plants
   /** Buys and starts building the next plant site. */
   | { type: 'buildPlant' }
   /** Allows or forbids a plant to start a model. At least one model must stay allowed. */
   | { type: 'setPlantModel'; plant: number; model: ModelId; allowed: boolean }
-  | { type: 'upgradeWarehouse' }
   // Product (per model)
   /** Buys the model's tooling (BALANCE.models[model].unlockCost) so it can be built and ordered. */
   | { type: 'unlockModel'; model: ModelId }

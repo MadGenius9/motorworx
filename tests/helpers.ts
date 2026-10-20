@@ -4,7 +4,7 @@ import type { ComponentId, ModelId, StationId, TrimId } from '../src/config/bala
 import { applyCommand } from '../src/sim/commands';
 import type { Command, CommandResult } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
-import { orderProgress, projectedDailyCosts, queueCapacity } from '../src/sim/selectors';
+import { orderProgress, projectedDailyCosts, queueCapacity, yardCapacity } from '../src/sim/selectors';
 import type { GameState, LedgerCategory, SalesOrder, Vehicle } from '../src/sim/types';
 import type { StorageLike } from '../src/game/GameController';
 
@@ -208,7 +208,7 @@ export function checkInvariants(s: GameState): string[] {
   if (ops > s.staff.operator) errs.push(`assigned operators ${ops} > ${s.staff.operator}`);
   if (insp > s.staff.inspector) errs.push(`assigned inspectors ${insp} > ${s.staff.inspector}`);
   s.yard.forEach((v) => place(v, 'yard'));
-  const yardCap = BALANCE.start.yardCapacity + s.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
+  const yardCap = yardCapacity(s);
   if (s.yard.length > yardCap) errs.push(`yard ${s.yard.length} > cap ${yardCap}`);
   for (const v of vehicles(s)) {
     const where = loc.get(v.id);
