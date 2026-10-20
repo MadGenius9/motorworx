@@ -1,5 +1,5 @@
 import { COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
-import { defaultModelConfig } from './initialState';
+import { createMarket, defaultModelConfig } from './initialState';
 import type { GameState, ModelConfig, ModelId } from './types';
 import { SAVE_VERSION } from './types';
 
@@ -46,6 +46,20 @@ function migrateV1(data: Record<string, unknown>): void {
   data.version = 2;
 }
 
+/** v2 → v3: rival manufacturers. Rivals start fresh; existing offers are not contested. */
+function migrateV2(data: Record<string, unknown>): void {
+  const time = typeof data.time === 'number' ? data.time : 0;
+  data.market = createMarket(time);
+  if (Array.isArray(data.orders)) {
+    for (const o of data.orders) {
+      if (!isObj(o)) continue;
+      o.contested = false;
+      o.lostTo = null;
+    }
+  }
+  data.version = 3;
+}
+
 /** Parse and validate a saved game. Throws an Error with a readable message on bad data. */
 export function deserialize(json: string): GameState {
   if (typeof json !== 'string' || json.trim() === '') throw new Error('The save is empty.');
@@ -57,6 +71,7 @@ export function deserialize(json: string): GameState {
   }
   if (!isObj(data)) throw new Error('The save file does not contain a MotorWorx game.');
   if (data.version === 1) migrateV1(data);
+  if (data.version === 2) migrateV2(data);
   if (data.version !== SAVE_VERSION) {
     throw new Error(
       `This save was made by an incompatible version of MotorWorx (save version ${String(
@@ -71,6 +86,7 @@ export function deserialize(json: string): GameState {
   for (const k of ['shipments', 'yard', 'orders', 'plan', 'events']) {
     if (!Array.isArray(data[k])) problems.push(k);
   }
+  if (!isObj(data.market) || !Array.isArray(data.market.rivals) || !isObj(data.market.today)) problems.push('market');
   if (isObj(data.product)) {
     const models = data.product.models;
     if (!isObj(models) || MODEL_IDS.some((m) => !isObj(models[m]))) problems.push('product.models');

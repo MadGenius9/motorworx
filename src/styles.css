@@ -1299,3 +1299,47 @@ li.current .tut-check {
   opacity: 0.75;
   font-weight: 400;
 }
+
+/* Seven sidebar tabs: wrap into a 4 + 3 grid so labels and badges stay readable. */
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/* Market tab */
+.share-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel-3);
+  margin: 4px 0 6px;
+}
+.share-bar span {
+  display: block;
+  height: 100%;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.segment {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.segment:last-child {
+  border-bottom: none;
+}
+.segment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.segment-head .num {
+  margin-left: auto;
+}
+.table.compact td {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}

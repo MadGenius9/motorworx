@@ -6,8 +6,8 @@ import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } fro
 
 export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
 
-/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models. */
-export const SAVE_VERSION = 2;
+/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models, v3 rivals. */
+export const SAVE_VERSION = 3;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
@@ -127,7 +127,16 @@ export interface Shipment {
   arrivesAt: number;
 }
 
-export type OrderStatus = 'offered' | 'accepted' | 'delivered' | 'paid' | 'declined' | 'expired' | 'cancelled';
+export type OrderStatus =
+  | 'offered'
+  | 'accepted'
+  | 'delivered'
+  | 'paid'
+  | 'declined'
+  | 'expired'
+  | 'cancelled'
+  /** A rival won the offer before the player answered. */
+  | 'lost';
 
 export interface SalesOrder {
   id: number;
@@ -158,6 +167,10 @@ export interface SalesOrder {
   lateDays: number;
   /** Set once when the deadline passes while undelivered (to log one warning). */
   lateWarned: boolean;
+  /** Rivals may win this offer if the player waits (false for the tutorial's first order). */
+  contested: boolean;
+  /** Rival that won the offer (status 'lost'). */
+  lostTo: string | null;
 }
 
 export interface ProductionJob {
@@ -257,6 +270,36 @@ export interface ProductConfig {
   models: Record<ModelId, ModelConfig>;
 }
 
+/** A rival's position in one model × trim segment. */
+export interface RivalSegment {
+  /** False until the rival launches this model (BALANCE.competition.rivals[].launchDay). */
+  active: boolean;
+  /** Current price as a multiple of the segment reference value. */
+  priceIndex: number;
+  /** A promotion discounts the price until this time, or null. */
+  promoUntil: number | null;
+}
+
+export interface RivalState {
+  id: string;
+  reputation: number;
+  segments: Record<ModelId, Record<TrimId, RivalSegment>>;
+}
+
+/** Open-market units sold per company in one day (rivals' figures are expected values). */
+export interface MarketDay {
+  day: number;
+  player: number;
+  rivals: Record<string, number>;
+}
+
+export interface MarketState {
+  rivals: RivalState[];
+  /** Running totals for the current day; pushed to history at midnight. */
+  today: MarketDay;
+  history: MarketDay[];
+}
+
 export interface GameStats {
   vehiclesStarted: number;
   vehiclesBuilt: number;
@@ -294,6 +337,7 @@ export interface GameState {
   /** Finished vehicle ids in the yard, oldest first. */
   yard: number[];
   orders: SalesOrder[];
+  market: MarketState;
   plan: ProductionJob[];
   staff: Record<StaffRole, number>;
   finance: FinanceState;

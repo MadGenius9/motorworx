@@ -20,6 +20,9 @@ import {
   modelColorHex,
   queueCapacity,
   recipeFor,
+  rivalName,
+  rivalPriceIndex,
+  segmentShares,
   staffFactor,
   stationName,
   trimSpec,
@@ -294,7 +297,11 @@ function generateOffer(state: GameState): void {
   const qty = randInt(state, O.minQty, O.maxQtyBase + Math.floor(rep / O.repPerExtraQty));
   const terms = pick(state, O.paymentTerms);
   const spread = randRange(state, O.priceSpread[0], O.priceSpread[1]);
-  const unitPrice = round50(trimSpec(model, trim).baseValue * spread * (0.92 + rep / 600) * terms.priceMult);
+  // Dealers pay more where rivals price high and less where they undercut.
+  const active = state.market.rivals.filter((r) => r.segments[model][trim].active);
+  const avgIdx = active.length ? active.reduce((n, r) => n + rivalPriceIndex(state, r, model, trim), 0) / active.length : 1;
+  const follow = 1 + BALANCE.competition.offerPriceFollow * (avgIdx - 1);
+  const unitPrice = round50(trimSpec(model, trim).baseValue * spread * (0.92 + rep / 600) * terms.priceMult * follow);
   const slack = randRange(state, O.deadlineSlackMinutes[0], O.deadlineSlackMinutes[1]);
   const deadline = Math.round(state.time + O.deadlineBaseMinutes + qty * O.deadlineMinutesPerVehicle + slack);
   const dealer = pick(state, O.dealers);
@@ -324,6 +331,8 @@ function generateOffer(state: GameState): void {
     paidAt: null,
     lateDays: 0,
     lateWarned: false,
+    contested: true,
+    lostTo: null,
   };
   state.orders.push(order);
   logEvent(
@@ -333,10 +342,24 @@ function generateOffer(state: GameState): void {
   );
 }
 
+/** A rival wins an offer the player has left waiting. Prefers rivals active in the segment. */
+function maybeLoseOffer(state: GameState, o: SalesOrder): boolean {
+  const C = BALANCE.competition;
+  if (!o.contested || state.time % 60 !== 0 || state.time - o.createdAt < C.offerSnipeAfterMinutes) return false;
+  if (!chance(state, C.offerSnipeChancePerHour)) return false;
+  const inSegment = state.market.rivals.filter((r) => r.segments[o.model][o.trim].active);
+  const winner = pick(state, inSegment.length ? inSegment : state.market.rivals);
+  o.status = 'lost';
+  o.lostTo = winner.id;
+  logEvent(state, 'warn', `${rivalName(winner.id)} won offer #${o.id} from ${o.dealer} (${o.quantity} ${vehicleLabel(state, o.model, o.trim)}) while it waited.`);
+  return true;
+}
+
 function ordersTick(state: GameState): void {
   if (state.time % BALANCE.orders.checkEveryMinutes === 0) generateOffer(state);
   for (const o of state.orders) {
     if (o.status === 'offered') {
+      if (maybeLoseOffer(state, o)) continue;
       if (state.time >= o.offerExpiresAt) {
         o.status = 'expired';
         logEvent(state, 'info', `Offer #${o.id} from ${o.dealer} expired.`);
@@ -656,17 +679,25 @@ function receiveShipments(state: GameState): void {
 
 function marketSales(state: GameState): void {
   const M = BALANCE.market;
+  const C = BALANCE.competition;
   for (const model of MODEL_IDS) {
     const mc = state.product.models[model];
     for (const trim of TRIM_IDS) {
-      if (!mc.marketListed[trim]) continue;
       let v: Vehicle | undefined;
-      for (const vid of state.yard) {
-        const c = getVehicle(state, vid);
-        if (c && c.orderId === null && c.model === model && c.trim === trim) {
-          v = c;
-          break;
+      if (mc.unlocked && mc.marketListed[trim]) {
+        for (const vid of state.yard) {
+          const c = getVehicle(state, vid);
+          if (c && c.orderId === null && c.model === model && c.trim === trim) {
+            v = c;
+            break;
+          }
         }
+      }
+      // Rivals sell their expected share of the segment this interval (the player competes only with stock on offer).
+      const seg = segmentShares(state, model, trim, { playerPresent: !!v, finish: v?.finish });
+      const segmentUnits = (trimSpec(model, trim).baseDemandPerDay * C.marketSizeCompanies * M.checkEveryMinutes) / MPD;
+      for (const r of seg.rivals) {
+        if (r.share > 0) state.market.today.rivals[r.id] = (state.market.today.rivals[r.id] ?? 0) + segmentUnits * r.share;
       }
       if (!v) continue;
       const price = mc.price[trim];
@@ -679,13 +710,66 @@ function marketSales(state: GameState): void {
       postCash(state, 'sales', `Market sale: ${v.serial} (${label})`, price);
       addReputation(state, M.repPerSale);
       state.stats.marketSold++;
+      state.market.today.player++;
       logEvent(state, 'good', `Sold ${v.serial} (${label}) on the open market for ${formatMoney(price)}.`);
       handleEscapedDefect(state, v);
     }
   }
 }
 
+/** Daily rival moves: launches, price reactions to their share, promotions and reputation drift. */
+function rivalsMidnight(state: GameState): void {
+  const C = BALANCE.competition;
+  const day = dayOf(state.time);
+  const fair = 1 / C.marketSizeCompanies;
+  for (const r of state.market.rivals) {
+    const spec = BALANCE.competition.rivals.find((x) => x.id === r.id);
+    if (!spec) continue;
+    const activeSegs: [ModelId, (typeof TRIM_IDS)[number]][] = [];
+    for (const m of MODEL_IDS) {
+      const launch = spec.launchDay[m];
+      for (const t of TRIM_IDS) {
+        const seg = r.segments[m][t];
+        if (!seg.active && launch !== null && day >= launch) {
+          seg.active = true;
+          if (t === TRIM_IDS[0]) logEvent(state, 'info', `${spec.name} launched a ${BALANCE.models[m].className} — more competition for buyers.`);
+        }
+        if (!seg.active) continue;
+        activeSegs.push([m, t]);
+        const mc = state.product.models[m];
+        const share = segmentShares(state, m, t, { playerPresent: mc.unlocked && mc.marketListed[t] }).rivals.find((x) => x.id === r.id)?.share ?? 0;
+        if (share < fair * C.fairBand[0]) seg.priceIndex -= C.priceStep;
+        else if (share > fair * C.fairBand[1]) seg.priceIndex += C.priceStep;
+        else {
+          const gap = spec.priceIndex - seg.priceIndex;
+          seg.priceIndex += Math.sign(gap) * Math.min(Math.abs(gap), C.priceStep / 2);
+        }
+        seg.priceIndex = Math.min(C.maxPriceIndex, Math.max(C.minPriceIndex, Math.round(seg.priceIndex * 1000) / 1000));
+        if (seg.promoUntil !== null && state.time >= seg.promoUntil) seg.promoUntil = null;
+      }
+    }
+    if (activeSegs.length && chance(state, C.promoChancePerDay)) {
+      const [m, t] = pick(state, activeSegs);
+      r.segments[m][t].promoUntil = state.time + C.promoDays * MPD;
+      logEvent(
+        state,
+        'info',
+        `${spec.name} is running a ${Math.round(C.promoDiscount * 100)}% promotion on its ${BALANCE.trims[t].name} ${
+          BALANCE.models[m].className
+        } for ${C.promoDays} days.`,
+      );
+    }
+    r.reputation += Math.sign(C.repTarget - r.reputation) * Math.min(C.repDrift, Math.abs(C.repTarget - r.reputation));
+  }
+  const mk = state.market;
+  const closed = { ...mk.today, rivals: Object.fromEntries(Object.entries(mk.today.rivals).map(([k, n]) => [k, Math.round(n * 10) / 10])) };
+  mk.history.push(closed);
+  if (mk.history.length > C.shareHistoryDays) mk.history.splice(0, mk.history.length - C.shareHistoryDays);
+  mk.today = { day, player: 0, rivals: Object.fromEntries(mk.rivals.map((r) => [r.id, 0])) };
+}
+
 function midnight(state: GameState): void {
+  rivalsMidnight(state);
   const endedDay = dayOf(state.time - 1);
   const payroll = dailyPayroll(state);
   postCash(state, 'payroll', `Payroll — day ${endedDay}`, -payroll);
@@ -755,7 +839,7 @@ export function pruneHistory(state: GameState): void {
     closed.sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0) || b.id - a.id);
     for (const v of closed.slice(CLOSED_VEHICLE_HISTORY)) delete state.vehicles[String(v.id)];
   }
-  const finalStatuses = new Set(['paid', 'declined', 'expired', 'cancelled']);
+  const finalStatuses = new Set(['paid', 'declined', 'expired', 'cancelled', 'lost']);
   const finals = state.orders.filter((o) => finalStatuses.has(o.status));
   if (finals.length > CLOSED_ORDER_HISTORY) {
     const drop = new Set(

@@ -410,6 +410,82 @@ export const BALANCE = {
     repPerSale: 0.15,
   },
 
+  /**
+   * Rival manufacturers. Open-market buyers in each model × trim segment are shared between you and the
+   * rivals active in it by "attractiveness" (appeal × reputation × price factor, same formula as yours).
+   * Segment size = marketSizeCompanies × baseDemandPerDay, so at full parity you sell what you did without rivals.
+   */
+  competition: {
+    marketSizeCompanies: 4,
+    rivals: [
+      {
+        id: 'vantor',
+        name: 'Vantor Automotive',
+        color: '#3fa7d6',
+        strategy: 'Budget',
+        blurb: 'High-volume builder that undercuts on price and cuts deeper when it loses share.',
+        /** Price as a multiple of the segment reference value. */
+        priceIndex: 0.93,
+        /** Added to the segment's appeal score. */
+        appealAdj: -5,
+        reputation: 48,
+        /** Game day each model launches (0 = from the start, null = never). */
+        launchDay: { sedan: 0, suv: 5, pickup: 3 } as Record<ModelId, number | null>,
+      },
+      {
+        id: 'halberd',
+        name: 'Halberd Motors',
+        color: '#c94f6d',
+        strategy: 'Premium',
+        blurb: 'Established brand with polished cars and high prices. Rarely discounts.',
+        priceIndex: 1.08,
+        appealAdj: 6,
+        reputation: 64,
+        launchDay: { sedan: 0, suv: 0, pickup: null } as Record<ModelId, number | null>,
+      },
+      {
+        id: 'sunline',
+        name: 'Sunline Cars',
+        color: '#d9a441',
+        strategy: 'Balanced',
+        blurb: 'Mid-market all-rounder with a strong pickup line and frequent promotions.',
+        priceIndex: 1.0,
+        appealAdj: 0,
+        reputation: 52,
+        launchDay: { sedan: 0, suv: 8, pickup: 0 } as Record<ModelId, number | null>,
+      },
+    ] as {
+      id: string;
+      name: string;
+      color: string;
+      strategy: string;
+      blurb: string;
+      priceIndex: number;
+      appealAdj: number;
+      reputation: number;
+      launchDay: Record<ModelId, number | null>;
+    }[],
+    /** Each midnight a rival moves its price index by this step: down if its segment share is below fair, up if above. */
+    priceStep: 0.02,
+    /** Share band (as a multiple of the fair share 1/companies) inside which a rival drifts back toward its strategy price. */
+    fairBand: [0.8, 1.25] as [number, number],
+    minPriceIndex: 0.82,
+    maxPriceIndex: 1.22,
+    /** Chance per rival per day of starting a promotion in one random segment. */
+    promoChancePerDay: 0.2,
+    promoDiscount: 0.08,
+    promoDays: 2,
+    /** Rival reputation drifts toward this value by `repDrift` per day (the market's long-run average). */
+    repTarget: 55,
+    repDrift: 0.5,
+    /** Open dealer offers can be won by a rival: chance per hour once the offer is this old. */
+    offerSnipeAfterMinutes: 2 * 60,
+    offerSnipeChancePerHour: 0.05,
+    /** Dealer offer prices follow rival pricing: price × (1 + follow × (average rival index − 1)). */
+    offerPriceFollow: 0.5,
+    shareHistoryDays: 14,
+  },
+
   reputation: { min: 0, max: 100 },
 
   finance: {

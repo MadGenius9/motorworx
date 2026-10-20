@@ -1,9 +1,10 @@
 import type { ReactNode } from 'react';
 import { STATION_IDS } from '../config/balance';
-import { orderProgress, type PanelTab } from '../sim/selectors';
+import { orderProgress, rivalOnPromo, type PanelTab } from '../sim/selectors';
 import type { GameState } from '../sim/types';
 import { EventTicker } from './EventTicker';
 import { FinancesTab } from './tabs/FinancesTab';
+import { MarketTab } from './tabs/MarketTab';
 import { OrdersTab } from './tabs/OrdersTab';
 import { StaffTab } from './tabs/StaffTab';
 import { SuppliersTab } from './tabs/SuppliersTab';
@@ -42,6 +43,18 @@ function badgesFor(state: GameState, tab: PanelTab): Badge[] {
       const n = STATION_IDS.filter((id) => state.stations[id].issues.some((i) => i.kind === 'staff')).length;
       return n ? [{ n, tone: 'warn', title: `${n} station(s) short of staff` }] : [];
     }
+    case 'market': {
+      const promos = state.market.rivals.reduce(
+        (n, r) =>
+          n +
+          Object.keys(r.segments).reduce(
+            (k, m) => k + (['economy', 'premium'] as const).filter((t) => rivalOnPromo(state, r, m as keyof typeof r.segments, t)).length,
+            0,
+          ),
+        0,
+      );
+      return promos ? [{ n: promos, tone: 'warn', title: `${promos} rival promotion(s) running` }] : [];
+    }
     case 'finances':
       return state.cash < 0 ? [{ n: 1, tone: 'bad', title: 'Cash is negative' }] : [];
     default:
@@ -52,6 +65,7 @@ function badgesFor(state: GameState, tab: PanelTab): Badge[] {
 const TABS: { id: PanelTab; label: string; render: () => ReactNode }[] = [
   { id: 'orders', label: 'Orders', render: () => <OrdersTab /> },
   { id: 'vehicles', label: 'Vehicles', render: () => <VehiclesTab /> },
+  { id: 'market', label: 'Market', render: () => <MarketTab /> },
   { id: 'suppliers', label: 'Suppliers', render: () => <SuppliersTab /> },
   { id: 'staff', label: 'Staff', render: () => <StaffTab /> },
   { id: 'finances', label: 'Finances', render: () => <FinancesTab /> },

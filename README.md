@@ -37,6 +37,8 @@ The tutorial card (bottom left) walks through the first order:
 
 Once you have some reputation and spare cash, open **Vehicles** to buy tooling for the **SUV** or the **Pickup**. Each model has its own parts recipe, build time, price and demand, and dealers start ordering it. Stations lose time retooling whenever they switch models, so schedule the same model back to back.
 
+You are not alone: three rival makers (Vantor, Halberd, Sunline) compete for open-market buyers and react to your prices, run promotions, and launch new models over time. Dealer offers you leave waiting can be won by a rival. The **Market** tab shows market share, rival prices per segment and rival news.
+
 Controls: drag to pan, mouse wheel to zoom, click a station for details and actions. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout

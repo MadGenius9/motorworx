@@ -4,7 +4,7 @@ import type { ComponentId, ModelId, StationId, TrimId } from '../src/config/bala
 import { applyCommand } from '../src/sim/commands';
 import type { Command, CommandResult } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
-import { orderProgress, queueCapacity } from '../src/sim/selectors';
+import { orderProgress, projectedDailyCosts, queueCapacity } from '../src/sim/selectors';
 import type { GameState, LedgerCategory, SalesOrder, Vehicle } from '../src/sim/types';
 import type { StorageLike } from '../src/game/GameController';
 
@@ -231,4 +231,53 @@ export function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * A competent automated player for balance tests: takes on only what the line can build in time, buys
+ * parts just in time for scheduled and in-progress work (keeping a payroll reserve), keeps a little
+ * market stock, and maintains equipment. Call every 30 game minutes.
+ */
+export function competentBot(s: GameState): void {
+  const reserve = projectedDailyCosts(s).total * 1.2;
+  for (const id of STATION_IDS) {
+    const st = s.stations[id];
+    if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id });
+    else if (!st.broken && !st.service && st.condition < 45 && s.cash > reserve + BALANCE.equipment.maintenance.cost)
+      applyCommand(s, { type: 'scheduleMaintenance', station: id });
+  }
+  for (const o of s.orders.filter((x) => x.status === 'accepted')) {
+    const p = orderProgress(s, o);
+    if (p.ready) applyCommand(s, { type: 'deliverOrder', orderId: o.id });
+    else if (p.shortfall > 0) applyCommand(s, { type: 'scheduleForOrder', orderId: o.id });
+  }
+  const queued = s.plan.reduce((n, j) => n + j.quantity - j.started, 0);
+  const wip = Object.values(s.vehicles).filter((v) => STATION_IDS.includes(v.stage as StationId) || v.stage === 'rework').length;
+  for (const o of s.orders.filter((x) => x.status === 'offered')) {
+    const hoursLeft = (o.deadline - s.time) / 60;
+    // ~2.5 h per car through the bottleneck, plus the cars already ahead of it.
+    if (queued + wip + o.quantity <= 6 && hoursLeft > (queued + wip + o.quantity) * 2.5 + 8) {
+      applyCommand(s, { type: 'acceptOrder', orderId: o.id });
+      break;
+    }
+  }
+  const unreserved = s.yard.filter((v) => s.vehicles[String(v)].orderId === null).length;
+  if (queued === 0 && unreserved < 2 && s.cash > 40_000) {
+    applyCommand(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
+  }
+  // Just-in-time parts for planned + in-progress work.
+  const need: Record<ComponentId, number> = { steel: 0, powertrain: 0, interior: 0, wheels: 0, paint: 0 };
+  const add = (n: Record<ComponentId, number>) => COMPONENT_IDS.forEach((c) => (need[c] += n[c]));
+  for (const j of s.plan) add(componentsFor(s, j.trim, j.quantity - j.started, [...STATION_IDS], j.model));
+  for (const v of Object.values(s.vehicles)) {
+    if (v.stage === 'stamping' || v.stage === 'body') add(componentsFor(s, v.trim, 1, ['paint', 'final'], v.model));
+    else if (v.stage === 'paint') add(componentsFor(s, v.trim, 1, ['final'], v.model));
+  }
+  const byValue = [...COMPONENT_IDS].sort((a, b) => BALANCE.components[b].basePrice - BALANCE.components[a].basePrice);
+  for (const c of byValue) {
+    const short = need[c] - s.inventory[c].qty - incoming(s, c);
+    const affordable = Math.floor((s.cash - reserve) / BALANCE.components[c].basePrice);
+    const qty = Math.min(short, affordable);
+    if (qty > 0) applyCommand(s, { type: 'purchase', supplierId: 'corvan', component: c, quantity: qty });
+  }
 }

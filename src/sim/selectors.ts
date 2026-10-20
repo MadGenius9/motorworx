@@ -9,6 +9,7 @@ import type {
   FinishId,
   GameState,
   ModelId,
+  RivalState,
   SalesOrder,
   StationId,
   TrimId,
@@ -16,7 +17,7 @@ import type {
   VehicleStage,
 } from './types';
 
-export type PanelTab = 'orders' | 'vehicles' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }
@@ -337,13 +338,117 @@ export function projectedDailyCosts(state: GameState): { payroll: number; overhe
   return { payroll, overhead, energy, total: payroll + overhead + energy };
 }
 
-function demandPerDay(state: GameState, model: ModelId, trim: TrimId, price: number, finish: FinishId): number {
+// ───────────────────────────── competition ─────────────────────────────
+
+type RivalSpec = (typeof BALANCE.competition.rivals)[number];
+
+export function rivalSpec(id: string): RivalSpec {
+  return BALANCE.competition.rivals.find((r) => r.id === id) ?? BALANCE.competition.rivals[0];
+}
+
+export function rivalName(id: string): string {
+  return rivalSpec(id).name;
+}
+
+/** Reference value of a segment (the price that counts as "parity"). */
+export function segmentReference(model: ModelId, trim: TrimId, finish: FinishId = 'solid'): number {
+  return trimSpec(model, trim).baseValue + BALANCE.finishes[finish].valueAdd;
+}
+
+/** Appeal × reputation × price factor — the same formula for the player and for rivals. */
+function attractiveness(appeal: number, reputation: number, priceIndex: number): number {
   const M = BALANCE.market;
+  const priceFactor = Math.min(M.maxPriceFactor, Math.exp(-M.elasticity * (priceIndex - 1)));
+  return (appeal / M.appealReference) * (M.repBase + reputation / 100) * priceFactor;
+}
+
+/** A rival's current price index in a segment, including any running promotion. */
+export function rivalPriceIndex(state: GameState, r: RivalState, model: ModelId, trim: TrimId): number {
+  const seg = r.segments[model][trim];
+  const promo = seg.promoUntil !== null && state.time < seg.promoUntil;
+  return seg.priceIndex * (promo ? 1 - BALANCE.competition.promoDiscount : 1);
+}
+
+export function rivalPrice(state: GameState, r: RivalState, model: ModelId, trim: TrimId): number {
+  return Math.round((segmentReference(model, trim) * rivalPriceIndex(state, r, model, trim)) / 50) * 50;
+}
+
+export function rivalOnPromo(state: GameState, r: RivalState, model: ModelId, trim: TrimId): boolean {
+  const until = r.segments[model][trim].promoUntil;
+  return until !== null && state.time < until;
+}
+
+export interface SegmentShares {
+  /** Open-market buyers per day this segment brings the player at the given price (if they have stock). */
+  demandPerDay: number;
+  playerShare: number;
+  rivals: { id: string; name: string; color: string; active: boolean; price: number; promo: boolean; share: number }[];
+  /** Share taken by unnamed importers standing in for rivals that are not in the segment yet. */
+  otherShare: number;
+}
+
+/**
+ * How a segment's buyers split between the player and the rivals. `playerPresent` = the player has
+ * cars on offer (when false, rivals and importers share the whole segment).
+ */
+export function segmentShares(
+  state: GameState,
+  model: ModelId,
+  trim: TrimId,
+  opts: { price?: number; finish?: FinishId; playerPresent?: boolean } = {},
+): SegmentShares {
+  const C = BALANCE.competition;
+  const mc = state.product.models[model];
   const t = trimSpec(model, trim);
-  const f = BALANCE.finishes[finish];
-  const ref = t.baseValue + f.valueAdd;
-  const priceFactor = Math.min(M.maxPriceFactor, Math.exp(-M.elasticity * (price / ref - 1)));
-  return t.baseDemandPerDay * ((t.appeal + f.appealAdd) / M.appealReference) * (M.repBase + state.reputation / 100) * priceFactor;
+  const finish = opts.finish ?? mc.finish[trim];
+  const price = opts.price ?? mc.price[trim];
+  const present = opts.playerPresent ?? true;
+  const aPlayer = present
+    ? attractiveness(t.appeal + BALANCE.finishes[finish].appealAdd, state.reputation, price / segmentReference(model, trim, finish))
+    : 0;
+  let activeCount = 0;
+  let sumRivals = 0;
+  const rivals = state.market.rivals.map((r) => {
+    const spec = rivalSpec(r.id);
+    const active = r.segments[model][trim].active;
+    const a = active ? attractiveness(t.appeal + spec.appealAdj, r.reputation, rivalPriceIndex(state, r, model, trim)) : 0;
+    if (active) activeCount++;
+    sumRivals += a;
+    return { id: r.id, name: spec.name, color: spec.color, active, price: rivalPrice(state, r, model, trim), promo: rivalOnPromo(state, r, model, trim), a };
+  });
+  // Missing competitors are stood in for by generic importers at parity (attractiveness 1).
+  const filler = Math.max(0, C.marketSizeCompanies - 1 - activeCount);
+  const denom = aPlayer + sumRivals + filler || 1;
+  const playerShare = aPlayer / denom;
+  return {
+    demandPerDay: t.baseDemandPerDay * C.marketSizeCompanies * playerShare,
+    playerShare,
+    rivals: rivals.map(({ a, ...rest }) => ({ ...rest, share: a / denom })),
+    otherShare: filler / denom,
+  };
+}
+
+/** Player's share of open-market units over the last `days` closed days (null without history). */
+export function recentMarketShare(state: GameState, days = 7): { player: number; rivals: Record<string, number> } | null {
+  const hist = state.market.history.slice(-days);
+  let total = 0;
+  let player = 0;
+  const rivals: Record<string, number> = {};
+  for (const d of hist) {
+    player += d.player;
+    total += d.player;
+    for (const [id, n] of Object.entries(d.rivals)) {
+      rivals[id] = (rivals[id] ?? 0) + n;
+      total += n;
+    }
+  }
+  if (total <= 0) return null;
+  for (const id of Object.keys(rivals)) rivals[id] /= total;
+  return { player: player / total, rivals };
+}
+
+function demandPerDay(state: GameState, model: ModelId, trim: TrimId, price: number, finish: FinishId): number {
+  return segmentShares(state, model, trim, { price, finish }).demandPerDay;
 }
 
 /** Internal variant used by the engine for a specific vehicle finish. */
@@ -831,6 +936,46 @@ export function getAlerts(state: GameState): Alert[] {
         },
       ],
     });
+  }
+
+  // Rivals out-selling the player's stock
+  for (const m of MODEL_IDS) {
+    const mc = state.product.models[m];
+    if (!mc.unlocked) continue;
+    for (const t of ['economy', 'premium'] as TrimId[]) {
+      if (!mc.marketListed[t]) continue;
+      const stock = state.yard.filter((id) => {
+        const v = state.vehicles[String(id)];
+        return v && v.orderId === null && v.model === m && v.trim === t;
+      }).length;
+      if (stock < 2) continue;
+      const seg = segmentShares(state, m, t);
+      // Alert when the unreserved stock would take more than 3 days to clear at today's demand.
+      const daysToClear = seg.demandPerDay > 0 ? stock / seg.demandPerDay : Infinity;
+      if (daysToClear <= 3) continue;
+      const cheaper = seg.rivals.filter((r) => r.active && r.price < mc.price[t]).sort((a, b) => a.price - b.price);
+      const target = cheaper[0];
+      const actions: { label: string; action: AlertAction }[] = [{ label: 'Open Market', action: { kind: 'openTab', tab: 'market' } }];
+      if (target) {
+        const base = trimSpec(m, t).baseValue;
+        const price = Math.min(base * 3, Math.max(Math.round(base * 0.3), Math.round(target.price / 100) * 100));
+        actions.unshift({
+          label: `Match ${target.name} (${formatMoney(price)})`,
+          action: { kind: 'command', command: { type: 'setPrice', model: m, trim: t, price } },
+        });
+      }
+      alerts.push({
+        id: `losing-${m}-${t}`,
+        severity: 'warning',
+        title: `${vehicleLabel(state, m, t)} isn't selling`,
+        cause: `${stock} unreserved in the yard, ~${seg.demandPerDay.toFixed(1)} buyers/day at ${formatMoney(mc.price[t])} (${Math.round(
+          seg.playerShare * 100,
+        )}% share) — about ${Number.isFinite(daysToClear) ? Math.round(daysToClear) : '∞'} days to sell${
+          target ? `. ${target.name} sells at ${formatMoney(target.price)}` : ''
+        }.`,
+        actions,
+      });
+    }
   }
 
   // New model tooling within reach (only once the first order is paid, so it doesn't distract the tutorial).

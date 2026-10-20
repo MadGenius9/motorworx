@@ -96,10 +96,19 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * **Changeover:** each station remembers `lastModel`. Starting a vehicle of a different model adds `BALANCE.changeover.minutes[station]` to that slot (`slot.changeover`, included in `required`). The renderer shows `RETOOLING` and the plan flags model switches, so batching the same model pays off.
 * Saves are version 2. `deserialize` migrates version 1 saves: everything becomes the sedan, the old product settings become the sedan's, other models start locked (`tests/fixtures/save-v1.json` covers this).
 
+## Competition (milestone 3)
+
+* `BALANCE.competition.rivals`: Vantor (budget), Halberd (premium), Sunline (balanced). Each has a strategy price index, an appeal adjustment, a starting reputation and a launch day per model.
+* **Open market:** each model × trim segment has `marketSizeCompanies × baseDemandPerDay` buyers per day. They split between the player (only while the player has unreserved stock listed) and active rivals by attractiveness = appeal/70 × (0.5 + rep/100) × price factor. Missing rivals are stood in for by generic importers at parity, so at full parity the player sells what they did before rivals existed. Rival sales are tracked as expected values in `state.market.today/history`.
+* **Rival moves at midnight:** launch models on schedule; cut the price index by `priceStep` when below 0.8× a fair share, raise it above 1.25×, otherwise drift back toward their strategy price (clamped to 0.82–1.22). Each rival may start a promotion (−8 %, 2 days) in one segment. Rival reputation drifts toward 55.
+* **Dealer offers:** prices follow the average rival price index in the segment (half-weight). Offers the player leaves waiting for 2 h+ can be won by a rival (5 % per hour) → status `lost`, `lostTo`. The tutorial's first order is never contested; accepted orders can't be lost.
+* **UI:** Market tab (overall share, per-segment share and rival prices, rival profiles, daily sales, rival news). Alert "X isn't selling" when unreserved stock would take more than 3 days to clear, with a one-click price match.
+* Saves are version 3; v2 saves gain fresh rivals and uncontested existing offers.
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts
-export type PanelTab = 'orders' | 'vehicles' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }

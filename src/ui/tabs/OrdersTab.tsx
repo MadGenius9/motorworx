@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { BALANCE, TRIM_IDS, type ModelId, type TrimId } from '../../config/balance';
-import { estimatedProfitPerVehicle, orderProgress, unlockedModels, vehicleLabel } from '../../sim/selectors';
+import { estimatedProfitPerVehicle, orderProgress, rivalName, unlockedModels, vehicleLabel } from '../../sim/selectors';
 import type { SalesOrder } from '../../sim/types';
 import { ActionButton, Pill, Section } from '../common';
 import { formatDuration, formatMoney, formatTime, pct } from '../format';
@@ -51,6 +51,7 @@ function OfferCard({ o }: { o: SalesOrder }) {
       <div className="card-foot">
         <span className="small">
           <Countdown minutes={o.offerExpiresAt - state.time} label="Offer expires" />
+          {o.contested && <div className="muted">Rivals may win it if you wait.</div>}
         </span>
         <span className="btn-group">
           <ActionButton small variant="ghost" onClick={() => dispatch({ type: 'declineOrder', orderId: o.id })}>
@@ -246,7 +247,7 @@ function PlanSection() {
   );
 }
 
-const HISTORY_STATUSES = new Set(['delivered', 'paid', 'cancelled', 'expired', 'declined']);
+const HISTORY_STATUSES = new Set(['delivered', 'paid', 'cancelled', 'expired', 'declined', 'lost']);
 
 export function OrdersTab() {
   const { state } = useUi();
@@ -305,6 +306,11 @@ export function OrdersTab() {
                     {o.status === 'cancelled' && <Pill tone="bad">Cancelled</Pill>}
                     {o.status === 'expired' && <Pill tone="muted">Expired</Pill>}
                     {o.status === 'declined' && <Pill tone="muted">Declined</Pill>}
+                    {o.status === 'lost' && (
+                      <span title="A rival won this offer while it waited">
+                        <Pill tone="warn">Lost to {o.lostTo ? rivalName(o.lostTo) : 'a rival'}</Pill>
+                      </span>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -5,8 +5,11 @@ import type {
   ComponentStock,
   ExpenseCategory,
   GameState,
+  MarketState,
   ModelConfig,
   ModelId,
+  RivalSegment,
+  RivalState,
   SalesOrder,
   StationId,
   StationState,
@@ -63,6 +66,25 @@ export function defaultModelConfig(m: ModelId, unlocked: boolean): ModelConfig {
   };
 }
 
+/** Rivals at their starting positions; segments whose launch day has arrived by `time` are active. */
+export function createMarket(time: number): MarketState {
+  const day = Math.floor(time / BALANCE.time.minutesPerDay) + 1;
+  const rivals: RivalState[] = BALANCE.competition.rivals.map((spec) => {
+    const segments = {} as RivalState['segments'];
+    for (const m of MODEL_IDS) {
+      const launch = spec.launchDay[m];
+      const bySeg = {} as Record<(typeof TRIM_IDS)[number], RivalSegment>;
+      for (const t of TRIM_IDS) {
+        bySeg[t] = { active: launch !== null && launch <= day, priceIndex: spec.priceIndex, promoUntil: null };
+      }
+      segments[m] = bySeg;
+    }
+    return { id: spec.id, reputation: spec.reputation, segments };
+  });
+  const empty = () => Object.fromEntries(BALANCE.competition.rivals.map((r) => [r.id, 0]));
+  return { rivals, today: { day, player: 0, rivals: empty() }, history: [] };
+}
+
 /** Fresh game state built entirely from BALANCE.start. */
 export function createInitialState(seed: number = BALANCE.start.seed): GameState {
   const S = BALANCE.start;
@@ -106,6 +128,8 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     paidAt: null,
     lateDays: 0,
     lateWarned: false,
+    contested: false,
+    lostTo: null,
   };
 
   const models = {} as Record<ModelId, ModelConfig>;
@@ -132,6 +156,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     vehicles: {},
     yard: [],
     orders: [firstOrder],
+    market: createMarket(time),
     plan: [],
     staff: { ...S.staff },
     finance: {

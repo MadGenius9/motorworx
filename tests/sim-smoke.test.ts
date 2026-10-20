@@ -17,6 +17,7 @@ import {
 } from '../src/sim/selectors';
 import type { Command } from '../src/sim/commandTypes';
 import type { GameState } from '../src/sim/types';
+import { competentBot, staffLine } from './helpers';
 
 function must(state: GameState, cmd: Command) {
   const r = applyCommand(state, cmd);
@@ -128,40 +129,12 @@ describe('sim smoke', () => {
   });
 });
 
-/** A diligent bot: buys parts, schedules builds for orders and market, maintains equipment. */
-function botTick(s: GameState) {
-  if (s.time % 30 !== 0) return;
-  for (const o of s.orders) {
-    if (o.status === 'offered') applyCommand(s, { type: 'acceptOrder', orderId: o.id });
-  }
-  for (const o of s.orders) {
-    if (o.status !== 'accepted') continue;
-    if (o.reserved.length >= o.quantity) applyCommand(s, { type: 'deliverOrder', orderId: o.id });
-    else if (orderProgress(s, o).shortfall > 0) applyCommand(s, { type: 'scheduleForOrder', orderId: o.id });
-  }
-  const queued = s.plan.reduce((n, j) => n + j.quantity - j.started, 0);
-  if (queued < 2 && s.yard.length < 6) applyCommand(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
-  for (const c of COMPONENT_IDS) {
-    const have = s.inventory[c].qty + s.shipments.filter((x) => x.component === c).reduce((n, x) => n + x.qty, 0);
-    const target = c === 'steel' ? 12 : 6;
-    if (have <= target / 3) applyCommand(s, { type: 'purchase', supplierId: 'corvan', component: c, quantity: target - have });
-  }
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    if (st.broken) applyCommand(s, { type: 'repair', station: id });
-    else if (st.condition < 45) applyCommand(s, { type: 'scheduleMaintenance', station: id });
-  }
-}
-
 describe('balance sanity', () => {
-  it('a diligent bot is clearly profitable over 10 days', () => {
-    const s = createInitialState();
-    must(s, { type: 'hire', role: 'operator', count: 3 });
-    must(s, { type: 'assignOperator', station: 'paint', delta: 1 });
-    must(s, { type: 'assignOperator', station: 'final', delta: 1 });
-    must(s, { type: 'assignOperator', station: 'final', delta: 1 });
+  it.each([BALANCE.start.seed, 1, 2, 3])('a diligent bot is clearly profitable over 10 days (seed %i)', (seed) => {
+    const s = createInitialState(seed);
+    staffLine(s);
     for (let i = 0; i < 10 * 1440; i++) {
-      botTick(s);
+      if (i % 30 === 0) competentBot(s);
       step(s);
       if (i % 240 === 0) checkInvariants(s);
     }
