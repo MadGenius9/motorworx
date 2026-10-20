@@ -3,7 +3,7 @@
  * Pure functions of the (read-only) game state: recomputed every frame, cheap.
  */
 import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
-import type { ComponentId, FinishId, StationId, TrimId } from '../config/balance';
+import type { ComponentId, FinishId, ModelId, StationId, TrimId } from '../config/balance';
 import type { GameState, WorkSlot } from '../sim/types';
 import { queueCapacity, yardCapacity } from '../sim/selectors';
 
@@ -212,6 +212,7 @@ export interface VehicleLook {
   progress: number;
   color: string;
   finish: FinishId;
+  model: ModelId;
   trim: TrimId;
   /** Draw scale relative to G.carLen. */
   scale: number;
@@ -245,9 +246,12 @@ const QUEUE_PHASE: Record<StationId, BuildPhase> = {
   inspection: 'complete',
 };
 
+/** Build progress of the vehicle itself (retooling time at the start of a slot doesn't advance it). */
 function slotProgress(s: WorkSlot): number {
   if (s.done) return 1;
-  return s.required > 0 ? Math.max(0, Math.min(1, s.progress / s.required)) : 0;
+  const c = s.changeover ?? 0;
+  const work = s.required - c;
+  return work > 0 ? Math.max(0, Math.min(1, (s.progress - c) / work)) : 0;
 }
 
 export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<number, VehicleTarget> {
@@ -263,6 +267,7 @@ export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<num
         progress,
         color: v.color,
         finish: v.finish,
+        model: v.model,
         trim: v.trim,
         scale,
         reworkTag: v.defectDetected,

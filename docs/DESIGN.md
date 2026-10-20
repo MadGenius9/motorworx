@@ -87,6 +87,15 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * Upgrades: capacity (+1 slot, +1 queue space) costs[capacityLevel]; reliability costs[reliabilityLevel]; warehouse costs[warehouseLevel] adds componentAdd capacity and yardAdd yard spaces. Ledger 'upgrade' (capex).
 * purchase: qty integer 1..999; cost = round(basePrice×priceMult)×qty; requires cash and warehouse space (on hand + incoming + qty ≤ capacity).
 
+## Vehicle models (milestone 2)
+
+* `BALANCE.models` defines the Sedan (unlocked at start), SUV and Pickup. Each has a class name, default name/colour, `unlockCost` (tooling, booked as capital spending via ledger category `upgrade`), `minReputation`, `timeMult` (applied on top of the trim's `timeMult`), `orderWeight`, and per-trim `baseValue`, `appeal`, `baseDemandPerDay` and `recipe`. `BALANCE.trims` now only holds the shared trim name and time multiplier.
+* `state.product.models[model]` holds the player's settings per model: `unlocked`, name, colour, finish/price/market listing per trim. Vehicles, sales orders and production jobs all carry `model`.
+* `unlockModel` fails until reputation ≥ `minReputation` and cash ≥ `unlockCost` (the starting reputation is below every requirement, so there is no day-1 trap). `scheduleBuild` rejects locked models.
+* Dealer offers pick among unlocked models weighted by `orderWeight` (no RNG draw while only one model is unlocked). Reservations and market sales match model **and** trim.
+* **Changeover:** each station remembers `lastModel`. Starting a vehicle of a different model adds `BALANCE.changeover.minutes[station]` to that slot (`slot.changeover`, included in `required`). The renderer shows `RETOOLING` and the plan flags model switches, so batching the same model pays off.
+* Saves are version 2. `deserialize` migrates version 1 saves: everything becomes the sedan, the old product settings become the sedan's, other models start locked (`tests/fixtures/save-v1.json` covers this).
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts
@@ -105,7 +114,7 @@ stationName(id): string
 stationStatus(state, id): StationStatus      // broken>repair>maintenance>blocked(downstream|materials|cash)>understaffed(no staff or partial)>running>idle
 stationStaff(state, id): number; stationRequiredStaff(state, id): number; staffFactor(state, id): number
 queueCapacity(state, id): number             // 0 for stamping
-cycleMinutes(id, trim, finish): number
+cycleMinutes(id, model, trim, finish): number; changeoverMinutes(state, id, model): number
 breakdownHazardPerHour(state, id): number; breakdownRisk(state, id): 'low' | 'elevated' | 'high'
 detectionRate(state): number
 unassignedOperators(state): number; freeTechnicians(state): number
@@ -114,20 +123,21 @@ stockOnHand(state): number; incomingUnits(state): number
 avgUnitCost(state, c): number; avgQuality(state, c): number   // fall back to Corvan list price / quality when empty
 dailyPayroll(state): number
 projectedDailyCosts(state): { payroll: number; overhead: number; energy: number; total: number }
-marketDemandPerDay(state, trim, price?): number
-estimateUnitCost(state, trim): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number }
+marketDemandPerDay(state, model, trim, price?): number
+estimateUnitCost(state, model, trim): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number }
   // laborOverhead = projectedDailyCosts.total / estimated daily throughput (bottleneck: 1440 / max over stations of cycle/slots), clearly an estimate
-estimatedProfitPerVehicle(state, trim, price?): number
+estimatedProfitPerVehicle(state, model, trim, price?): number
 inventoryValue(state): { raw: number; incoming: number /* paid, in transit */; wip: number; finished: number; total: number }
 receivables(state): number; outstandingOrderValue(state): number /* accepted not yet delivered + receivables */
 financeSummary(state): { revenue; cogs; grossProfit; opexTotal; operatingProfit; capex; materialsPurchased }
-actualTrimResults(state, trim): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number }
+actualTrimResults(state, model, trim): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number }
 orderProgress(state, order): { reserved: number; inProduction: number; scheduled: number; shortfall: number; ready: boolean; late: boolean; minutesLeft: number }
 ledgerReconciliation(state): { expected: number; actual: number; ok: boolean }
 nextUpgradeCost(state, kind: 'capacity' | 'reliability', station: StationId): number | null; nextWarehouseCost(state): number | null
 getAlerts(state): Alert[]       // sorted critical first; each names its cause and offers ≥1 working action
 tutorialSteps(state): TutorialStep[]
 vehiclesInStage(state, stage): Vehicle[]
+modelName(state, m); modelClassName(m); vehicleLabel(state, m, t) /* "Kestrel Premium" */; trimSpec(m, t); unlockedModels(state); unlockBlocker(state, m): string | null
 ```
 
 Alerts to cover: broken station (Repair command), service in progress (info), high breakdown risk (Schedule maintenance), missing materials (open Suppliers), no/under staff (open Staff), downstream blocked (open station), rework waiting for cash, yard full (open Orders/Vehicles), order ready (Deliver command), order late / at risk with shortfall (Schedule build command), new offers (open Orders), nothing scheduled while idle (open Orders), payroll exceeds cash (open Finances), insolvency countdown (open Finances), warehouse nearly full (open Suppliers).

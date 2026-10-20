@@ -12,11 +12,13 @@ import {
   formatDuration,
   formatTime,
   incomingUnits,
+  modelName,
   stationRequiredStaff,
   stationStaff,
   stationStatus,
   staffFactor,
   stockOnHand,
+  unlockedModels,
   warehouseCapacity,
   yardCapacity,
 } from '../sim/selectors';
@@ -677,7 +679,9 @@ export class FactoryRenderer {
     ctx.fillStyle = COLORS.accent;
     ctx.fillRect(r.x, r.y + 10, 4, 34);
     text(ctx, 'MOTORWORX', r.x + 14, r.y + 30, { size: 22, weight: 800, color: COLORS.accent });
-    text(ctx, `PLANT 01 · ${state.product.name.toUpperCase()}`, r.x + 14, r.y + 48, { size: 10, weight: 600, color: COLORS.textDim });
+    const lineup = unlockedModels(state);
+    const lineupText = lineup.length === 1 ? modelName(state, lineup[0]).toUpperCase() : `${lineup.length} MODELS`;
+    text(ctx, `PLANT 01 · ${lineupText}`, r.x + 14, r.y + 48, { size: 10, weight: 600, color: COLORS.textDim });
     text(ctx, formatTime(state.time), r.x + 14, r.y + 78, { size: 15, weight: 700, color: COLORS.text });
     text(ctx, `Built today: ${state.stats.builtToday}`, r.x + 14, r.y + 100, { size: 11, color: COLORS.textDim });
     text(ctx, `Total built: ${state.stats.vehiclesBuilt}`, r.x + 14, r.y + 116, { size: 11, color: COLORS.textDim });
@@ -887,7 +891,9 @@ export class FactoryRenderer {
             : COLORS.blocked
           : frozen
             ? COLORS.idle
-            : COLORS.running;
+            : (slot.changeover ?? 0) > slot.progress
+              ? COLORS.service
+              : COLORS.running;
         ctx.fillRect(px, py, pw * f, 4);
         if (slot.done) {
           const lbl = id === 'inspection' ? (slot.outcome === 'rework' ? 'REWORK' : 'PASS') : 'DONE';
@@ -1090,6 +1096,11 @@ export class FactoryRenderer {
       return { text: 'UNDERSTAFFED', color: COLORS.blocked, textColor: '#111' };
     }
     if (has('cash')) return { text: 'NO CASH', color: COLORS.blocked, textColor: '#111' };
+    const retool = st.slots.find((x) => x && !x.done && (x.changeover ?? 0) > x.progress);
+    if (retool) {
+      const left = Math.ceil(((retool.changeover ?? 0) - retool.progress) / Math.max(0.01, staffFactor(state, id)));
+      return { text: `RETOOLING · ${formatDuration(left)}`, color: COLORS.service, textColor: '#fff', wrench: true };
+    }
     return null;
   }
 

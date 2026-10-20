@@ -2,11 +2,12 @@
  * Simulation state. Everything here is plain JSON so it can be saved/loaded directly.
  * The simulation (src/sim) owns and mutates this; rendering and UI only read it.
  */
-import type { ComponentId, FinishId, StaffRole, StationId, TrimId } from '../config/balance';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from '../config/balance';
 
-export type { ComponentId, FinishId, StaffRole, StationId, TrimId };
+export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
 
-export const SAVE_VERSION = 1;
+/** Bump when the saved shape changes; add a migration in save.ts. v2 added vehicle models. */
+export const SAVE_VERSION = 2;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
@@ -15,6 +16,7 @@ export interface Vehicle {
   id: number;
   /** Human-readable serial e.g. "MX-0007". */
   serial: string;
+  model: ModelId;
   trim: TrimId;
   finish: FinishId;
   /** Hex colour fixed when the vehicle is started. */
@@ -54,6 +56,8 @@ export interface WorkSlot {
   componentQuality: number;
   /** Inspection only: result decided when inspection completes. */
   outcome: 'pass' | 'rework' | null;
+  /** Retooling minutes included in `required` because the station switched models. */
+  changeover: number;
 }
 
 export interface ServiceJob {
@@ -89,6 +93,8 @@ export interface StationState {
   /** Operators assigned (unused for inspection, which uses all inspectors). */
   assigned: number;
   issues: StationIssue[];
+  /** Model of the last job started here (null before the first job); a different model costs changeover time. */
+  lastModel: ModelId | null;
   /** Energy cost accrued since the last midnight bill. */
   energyAccrued: number;
   /** Lifetime counters. */
@@ -126,6 +132,7 @@ export type OrderStatus = 'offered' | 'accepted' | 'delivered' | 'paid' | 'decli
 export interface SalesOrder {
   id: number;
   dealer: string;
+  model: ModelId;
   trim: TrimId;
   quantity: number;
   unitPrice: number;
@@ -155,6 +162,7 @@ export interface SalesOrder {
 
 export interface ProductionJob {
   id: number;
+  model: ModelId;
   trim: TrimId;
   quantity: number;
   /** Vehicles already started at stamping from this job. */
@@ -233,13 +241,20 @@ export interface EventLogEntry {
   text: string;
 }
 
-export interface ProductConfig {
+/** Player settings for one vehicle model. */
+export interface ModelConfig {
+  /** Tooling bought: the model can be scheduled and dealers order it. */
+  unlocked: boolean;
   name: string;
   colorId: string;
   finish: Record<TrimId, FinishId>;
   price: Record<TrimId, number>;
   /** Whether unreserved finished vehicles of this trim are offered on the open market. */
   marketListed: Record<TrimId, boolean>;
+}
+
+export interface ProductConfig {
+  models: Record<ModelId, ModelConfig>;
 }
 
 export interface GameStats {

@@ -1286,3 +1286,16 @@ li.current .tut-check {
     opacity: 0;
   }
 }
+
+/* Vehicle model switcher (Vehicles tab) */
+.model-switch {
+  display: flex;
+  margin-bottom: 10px;
+}
+.model-switch button {
+  flex: 1;
+}
+.model-switch button .small {
+  opacity: 0.75;
+  font-weight: 400;
+}

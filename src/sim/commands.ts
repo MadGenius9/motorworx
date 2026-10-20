@@ -16,9 +16,13 @@ import {
   nextWarehouseCost,
   orderProgress,
   stationName,
+  isModel,
+  modelName,
   stockOnHand,
-  trimName,
+  trimSpec,
   unassignedOperators,
+  unlockBlocker,
+  vehicleLabel,
   warehouseCapacity,
 } from './selectors';
 import type { GameState, SalesOrder, StaffRole, StationId } from './types';
@@ -76,9 +80,9 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       o.acceptedAt = state.time;
       o.priority = maxPrio + 1;
       state.stats.ordersAccepted++;
-      logEvent(state, 'info', `Accepted order #${o.id}: ${o.quantity} ${trimName(o.trim)} for ${o.dealer}, due ${formatTime(o.deadline)}.`);
+      logEvent(state, 'info', `Accepted order #${o.id}: ${o.quantity} ${vehicleLabel(state, o.model, o.trim)} for ${o.dealer}, due ${formatTime(o.deadline)}.`);
       allocateReservations(state);
-      return ok(`Accepted order #${o.id} — ${o.quantity} ${trimName(o.trim)} due ${formatTime(o.deadline)}.`);
+      return ok(`Accepted order #${o.id} — ${o.quantity} ${vehicleLabel(state, o.model, o.trim)} due ${formatTime(o.deadline)}.`);
     }
     case 'declineOrder': {
       const o = findOrder(state, cmd.orderId);
@@ -115,18 +119,22 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (p.shortfall <= 0) return fail(`Order #${o.id} is already fully covered (ready, in production or scheduled).`);
       // Order builds go ahead of unstarted market builds.
       const idx = state.plan.findIndex((j) => j.orderId === null && j.started === 0);
-      const job = { id: state.nextId++, trim: o.trim, quantity: p.shortfall, started: 0, orderId: o.id };
+      const job = { id: state.nextId++, model: o.model, trim: o.trim, quantity: p.shortfall, started: 0, orderId: o.id };
       if (idx >= 0) state.plan.splice(idx, 0, job);
       else state.plan.push(job);
-      return ok(`Scheduled ${p.shortfall} ${trimName(o.trim)} for order #${o.id}.`);
+      return ok(`Scheduled ${p.shortfall} ${vehicleLabel(state, o.model, o.trim)} for order #${o.id}.`);
     }
 
     // ─────────────── Production plan ───────────────
     case 'scheduleBuild': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       if (!TRIM_IDS.includes(cmd.trim)) return fail('Unknown trim.');
+      if (!state.product.models[cmd.model].unlocked) {
+        return fail(`${modelName(state, cmd.model)} is not in production yet — buy its tooling in the Vehicles tab first.`);
+      }
       if (!isPositiveInt(cmd.quantity, 50)) return fail('Quantity must be a whole number from 1 to 50.');
-      state.plan.push({ id: state.nextId++, trim: cmd.trim, quantity: cmd.quantity, started: 0, orderId: null });
-      return ok(`Scheduled ${cmd.quantity} ${trimName(cmd.trim)} for stock / market sale.`);
+      state.plan.push({ id: state.nextId++, model: cmd.model, trim: cmd.trim, quantity: cmd.quantity, started: 0, orderId: null });
+      return ok(`Scheduled ${cmd.quantity} ${vehicleLabel(state, cmd.model, cmd.trim)} for stock / market sale.`);
     }
     case 'moveJob': {
       const i = state.plan.findIndex((j) => j.id === cmd.jobId);
@@ -144,7 +152,7 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       const job = state.plan[i];
       state.plan.splice(i, 1);
       const left = job.quantity - job.started;
-      return ok(`Cancelled ${left} unstarted ${trimName(job.trim)} build(s)${job.started > 0 ? '; started cars keep flowing' : ''}.`);
+      return ok(`Cancelled ${left} unstarted ${vehicleLabel(state, job.model, job.trim)} build(s)${job.started > 0 ? '; started cars keep flowing' : ''}.`);
     }
 
     // ─────────────── Suppliers ───────────────
@@ -307,42 +315,59 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
     }
 
     // ─────────────── Product ───────────────
+    case 'unlockModel': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
+      const blocker = unlockBlocker(state, cmd.model);
+      if (blocker) return fail(blocker);
+      const spec = BALANCE.models[cmd.model];
+      const name = modelName(state, cmd.model);
+      postCash(state, 'upgrade', `Tooling for ${name} ${spec.className}`, -spec.unlockCost);
+      state.product.models[cmd.model].unlocked = true;
+      logEvent(state, 'good', `${name} ${spec.className} tooling installed — schedule builds and watch for dealer orders.`);
+      return ok(`${name} ${spec.className} is now in production. Stations retool when they switch models, so batch builds.`);
+    }
     case 'setProductName': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       const name = typeof cmd.name === 'string' ? cmd.name.trim() : '';
-      if (name.length < 1 || name.length > 24) return fail('Product name must be 1–24 characters.');
-      state.product.name = name;
-      return ok(`Product renamed to ${name}.`);
+      if (name.length < 1 || name.length > 24) return fail('Model name must be 1–24 characters.');
+      state.product.models[cmd.model].name = name;
+      return ok(`${BALANCE.models[cmd.model].className} renamed to ${name}.`);
     }
     case 'setColor': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       const c = BALANCE.colors.find((x) => x.id === cmd.colorId);
       if (!c) return fail('Unknown colour.');
-      state.product.colorId = c.id;
-      return ok(`New cars will be painted ${c.name}.`);
+      state.product.models[cmd.model].colorId = c.id;
+      return ok(`New ${modelName(state, cmd.model)} cars will be painted ${c.name}.`);
     }
     case 'setFinish': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       if (!TRIM_IDS.includes(cmd.trim)) return fail('Unknown trim.');
       if (!FINISH_IDS.includes(cmd.finish)) return fail('Unknown finish.');
-      state.product.finish[cmd.trim] = cmd.finish;
-      return ok(`New ${trimName(cmd.trim)} cars will get a ${BALANCE.finishes[cmd.finish].name.toLowerCase()} finish.`);
+      state.product.models[cmd.model].finish[cmd.trim] = cmd.finish;
+      return ok(
+        `New ${vehicleLabel(state, cmd.model, cmd.trim)} cars will get a ${BALANCE.finishes[cmd.finish].name.toLowerCase()} finish.`,
+      );
     }
     case 'setPrice': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       if (!TRIM_IDS.includes(cmd.trim)) return fail('Unknown trim.');
       if (typeof cmd.price !== 'number' || !Number.isFinite(cmd.price)) return fail('Price must be a number.');
       const price = Math.round(cmd.price);
-      const base = BALANCE.trims[cmd.trim].baseValue;
+      const base = trimSpec(cmd.model, cmd.trim).baseValue;
       const min = Math.round(base * 0.3);
       const max = Math.round(base * 3);
       if (price < min || price > max) return fail(`Price must be between ${formatMoney(min)} and ${formatMoney(max)}.`);
-      state.product.price[cmd.trim] = price;
-      return ok(`${trimName(cmd.trim)} market price set to ${formatMoney(price)}.`);
+      state.product.models[cmd.model].price[cmd.trim] = price;
+      return ok(`${vehicleLabel(state, cmd.model, cmd.trim)} market price set to ${formatMoney(price)}.`);
     }
     case 'setMarketListed': {
+      if (!isModel(cmd.model)) return fail('Unknown model.');
       if (!TRIM_IDS.includes(cmd.trim)) return fail('Unknown trim.');
-      state.product.marketListed[cmd.trim] = !!cmd.listed;
+      state.product.models[cmd.model].marketListed[cmd.trim] = !!cmd.listed;
+      const label = vehicleLabel(state, cmd.model, cmd.trim);
       return ok(
-        cmd.listed
-          ? `Unreserved ${trimName(cmd.trim)} cars are now for sale on the open market.`
-          : `${trimName(cmd.trim)} cars are no longer offered on the open market.`,
+        cmd.listed ? `Unreserved ${label} cars are now for sale on the open market.` : `${label} cars are no longer offered on the open market.`,
       );
     }
 

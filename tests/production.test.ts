@@ -72,7 +72,7 @@ describe('(b) missing materials stop the correct station', () => {
     staffLine(s);
     buyShortfall(s, 'economy', 1, ['powertrain']);
     expect(s.inventory.powertrain.qty).toBe(0);
-    mustOk(s, { type: 'scheduleBuild', trim: 'economy', quantity: 1 });
+    mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 1 });
     // Parts arrive after the Corvan lead time; vehicle needs ~225 min to reach final.
     ticks(s, 600, (st) => {
       healAll(st);
@@ -106,7 +106,7 @@ describe('(c) equipment failure', () => {
     const s = createInitialState(SEED);
     healAll(s);
     staffLine(s);
-    mustOk(s, { type: 'scheduleBuild', trim: 'economy', quantity: 2 });
+    mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
     const activeSlot = (st: GameState, id: 'body' | 'paint') => st.stations[id].slots.find((sl) => sl && !sl.done && sl.progress > 0) ?? null;
     runUntil(s, (st) => activeSlot(st, 'body') !== null && activeSlot(st, 'paint') !== null, 400, healAll, 'body+paint active');
 
@@ -168,9 +168,9 @@ describe('(d) rework does not duplicate vehicles', () => {
     staffLine(s);
     mustOk(s, { type: 'hire', role: 'inspector', count: 2 });
     // Keep finished cars in the yard (no market sales) so we can count them.
-    mustOk(s, { type: 'setMarketListed', trim: 'economy', listed: false });
+    mustOk(s, { type: 'setMarketListed', model: 'sedan', trim: 'economy', listed: false });
     buyShortfall(s, 'economy', 3);
-    mustOk(s, { type: 'scheduleBuild', trim: 'economy', quantity: 3 });
+    mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 3 });
 
     const flagged = new Set<number>();
     const reworked = new Set<number>();
@@ -254,7 +254,7 @@ describe('(j) full downstream queue blocks upstream', () => {
     const s = createInitialState(SEED);
     healAll(s);
     expect(s.stations.paint.assigned).toBe(0);
-    mustOk(s, { type: 'scheduleBuild', trim: 'economy', quantity: 3 });
+    mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 3 });
     ticks(s, 500, (st) => {
       healAll(st);
       assertInvariants(st);

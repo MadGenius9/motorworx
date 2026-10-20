@@ -13,12 +13,45 @@ export type ComponentId = (typeof COMPONENT_IDS)[number];
 export const TRIM_IDS = ['economy', 'premium'] as const;
 export type TrimId = (typeof TRIM_IDS)[number];
 
+export const MODEL_IDS = ['sedan', 'suv', 'pickup'] as const;
+export type ModelId = (typeof MODEL_IDS)[number];
+
 export const FINISH_IDS = ['solid', 'metallic'] as const;
 export type FinishId = (typeof FINISH_IDS)[number];
 
 export type StaffRole = 'operator' | 'inspector' | 'technician';
 
 export type Recipe = Partial<Record<StationId, Partial<Record<ComponentId, number>>>>;
+
+/** Values for one model × trim combination. */
+export interface TrimSpec {
+  /** Reference market value; dealer order prices and market demand are measured against it. */
+  baseValue: number;
+  /** Customer appeal score (market demand scales with appeal / market.appealReference). */
+  appeal: number;
+  /** Open-market buyers per day at the reference price, reputation 50. */
+  baseDemandPerDay: number;
+  /** Components consumed at each station. */
+  recipe: Recipe;
+}
+
+export interface ModelSpec {
+  /** Vehicle class shown in the UI ("SUV"). */
+  className: string;
+  /** Default model name; the player can rename it. */
+  defaultName: string;
+  defaultColorId: string;
+  blurb: string;
+  /** One-off tooling investment to start building this model (0 = available from the start). */
+  unlockCost: number;
+  /** Reputation needed before the tooling can be bought. */
+  minReputation: number;
+  /** Multiplies every station's cycle time (on top of the trim multiplier). */
+  timeMult: number;
+  /** Relative chance that a dealer offer asks for this model (among unlocked models). */
+  orderWeight: number;
+  trims: Record<TrimId, TrimSpec>;
+}
 
 export const BALANCE = {
   time: {
@@ -38,8 +71,8 @@ export const BALANCE = {
     seed: 20261020,
     cash: 120_000,
     reputation: 50,
-    productName: 'Meridian',
-    colorId: 'ember',
+    /** Models the player can build from day 1. */
+    unlockedModels: ['sedan'] as ModelId[],
     /** Starting raw materials (bought earlier at Corvan prices/quality). */
     inventory: {
       steel: { qty: 6, unitCost: 1800, quality: 0.92 },
@@ -57,6 +90,7 @@ export const BALANCE = {
     /** A guaranteed easy first order so the tutorial has something to accept. */
     firstOrder: {
       dealer: 'Northgate Motors',
+      model: 'sedan' as ModelId,
       trim: 'economy' as TrimId,
       quantity: 3,
       unitPrice: 21_800,
@@ -64,7 +98,6 @@ export const BALANCE = {
       offerLifetimeMinutes: 24 * 60,
       paymentTermIndex: 1,
     },
-    defaultPrices: { economy: 21_500, premium: 33_500 } as Record<TrimId, number>,
     defaultFinish: { economy: 'solid', premium: 'metallic' } as Record<TrimId, FinishId>,
   },
 
@@ -103,35 +136,94 @@ export const BALANCE = {
     },
   ],
 
+  /** Trim levels shared by every model. Per-model values (recipe, value, demand) live in `models`. */
   trims: {
-    economy: {
-      name: 'Economy',
-      baseValue: 21_500,
-      appeal: 62,
+    economy: { name: 'Economy', timeMult: 1.0 },
+    premium: { name: 'Premium', timeMult: 1.35 },
+  } as Record<TrimId, { name: string; timeMult: number }>,
+
+  models: {
+    sedan: {
+      className: 'Sedan',
+      defaultName: 'Meridian',
+      defaultColorId: 'ember',
+      blurb: 'Compact four-door. Quick to build, steady demand.',
+      unlockCost: 0,
+      minReputation: 0,
       timeMult: 1.0,
-      baseDemandPerDay: 2.6,
-      recipe: {
-        stamping: { steel: 2 },
-        paint: { paint: 1 },
-        final: { powertrain: 1, interior: 1, wheels: 1 },
-      } as Recipe,
+      orderWeight: 1.0,
+      trims: {
+        economy: {
+          baseValue: 21_500,
+          appeal: 62,
+          baseDemandPerDay: 2.6,
+          recipe: { stamping: { steel: 2 }, paint: { paint: 1 }, final: { powertrain: 1, interior: 1, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 33_500,
+          appeal: 84,
+          baseDemandPerDay: 1.3,
+          recipe: { stamping: { steel: 3 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+      },
     },
-    premium: {
-      name: 'Premium',
-      baseValue: 33_500,
-      appeal: 84,
-      timeMult: 1.35,
-      baseDemandPerDay: 1.3,
-      recipe: {
-        stamping: { steel: 3 },
-        paint: { paint: 2 },
-        final: { powertrain: 1, interior: 2, wheels: 1 },
-      } as Recipe,
+    suv: {
+      className: 'SUV',
+      defaultName: 'Kestrel',
+      defaultColorId: 'cobalt',
+      blurb: 'Family crossover. Bigger margins, slower to build, needs a strong reputation.',
+      unlockCost: 90_000,
+      minReputation: 55,
+      timeMult: 1.25,
+      orderWeight: 0.8,
+      trims: {
+        economy: {
+          baseValue: 30_000,
+          appeal: 68,
+          baseDemandPerDay: 1.8,
+          recipe: { stamping: { steel: 3 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 43_000,
+          appeal: 88,
+          baseDemandPerDay: 1.0,
+          recipe: { stamping: { steel: 4 }, paint: { paint: 3 }, final: { powertrain: 1, interior: 3, wheels: 1 } },
+        },
+      },
     },
-  } as Record<
-    TrimId,
-    { name: string; baseValue: number; appeal: number; timeMult: number; baseDemandPerDay: number; recipe: Recipe }
-  >,
+    pickup: {
+      className: 'Pickup',
+      defaultName: 'Trailhand',
+      defaultColorId: 'graphite',
+      blurb: 'Work truck with a cargo bed. Heavy on steel, popular with fleet dealers.',
+      unlockCost: 110_000,
+      minReputation: 60,
+      timeMult: 1.15,
+      orderWeight: 0.9,
+      trims: {
+        economy: {
+          baseValue: 28_000,
+          appeal: 64,
+          baseDemandPerDay: 2.0,
+          recipe: { stamping: { steel: 4 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 1, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 39_500,
+          appeal: 80,
+          baseDemandPerDay: 1.0,
+          recipe: { stamping: { steel: 5 }, paint: { paint: 3 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+      },
+    },
+  } as Record<ModelId, ModelSpec>,
+
+  /**
+   * Retooling time added to a job when a station switches to a different model than its previous job.
+   * Batching the same model back to back avoids it.
+   */
+  changeover: {
+    minutes: { stamping: 45, body: 30, paint: 15, final: 20, inspection: 0 } as Record<StationId, number>,
+  },
 
   finishes: {
     solid: { name: 'Solid', paintMult: 1, paintMinutesAdd: 0, appealAdd: 0, valueAdd: 0 },

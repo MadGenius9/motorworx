@@ -11,11 +11,13 @@ import {
   stationStaff,
   stationStatus,
   unassignedOperators,
+  unlockedModels,
+  vehicleLabel,
   type StationStatus,
 } from '../sim/selectors';
 import type { GameState, StationIssue, WorkSlot } from '../sim/types';
 import { ActionButton, Bar, KV, Pill, Section, Swatch } from './common';
-import { NEXT_STATION, formatDuration, formatMoney, pct, stationName, trimName } from './format';
+import { NEXT_STATION, formatDuration, formatMoney, pct, stationName } from './format';
 import { useUi } from './useGame';
 
 export const STATUS_LABEL: Record<StationStatus, string> = {
@@ -71,12 +73,14 @@ function SlotRow({ state, slot, idx, doneText }: { state: GameState; slot: WorkS
       <div className="slot-head">
         <span>
           {v && <Swatch hex={v.color} />} <b>{v?.serial ?? `#${slot.vehicleId}`}</b>{' '}
-          <span className="muted">{v ? trimName(v.trim) : ''}</span>
+          <span className="muted">{v ? vehicleLabel(state, v.model, v.trim) : ''}</span>
         </span>
         <span className="num small">
           {slot.done
             ? doneText + (slot.outcome ? ` (${slot.outcome === 'pass' ? 'passed' : 'defect found → rework'})` : '')
-            : `${Math.floor(slot.progress)}/${slot.required} min`}
+            : (slot.changeover ?? 0) > slot.progress
+              ? `Retooling ${Math.floor(slot.progress)}/${slot.changeover} min`
+              : `${Math.floor(slot.progress)}/${slot.required} min`}
         </span>
       </div>
       <Bar value={slot.done ? 1 : slot.progress} max={slot.done ? 1 : slot.required} color={slot.done ? 'var(--amber)' : 'var(--accent)'} />
@@ -98,7 +102,7 @@ function QueueList({ state, ids, cap }: { state: GameState; ids: number[]; cap: 
             const v = state.vehicles[String(id)];
             return (
               <span key={id} className="chip">
-                {v && <Swatch hex={v.color} />} {v?.serial ?? `#${id}`} <span className="muted">{v ? trimName(v.trim) : ''}</span>
+                {v && <Swatch hex={v.color} />} {v?.serial ?? `#${id}`} <span className="muted">{v ? vehicleLabel(state, v.model, v.trim) : ''}</span>
               </span>
             );
           })}
@@ -163,13 +167,26 @@ export function StationPanel({ id, onClose }: { id: StationId; onClose: () => vo
         <Section title="Capacity">
           <KV k="Work slots" v={st.slots.length} />
           {id !== 'stamping' && <KV k="Queue capacity" v={qCap} />}
-          {TRIM_IDS.map((t) => (
+          {unlockedModels(state).flatMap((m) =>
+            TRIM_IDS.map((t) => {
+              const finish = state.product.models[m].finish[t];
+              return (
+                <KV
+                  key={`${m}-${t}`}
+                  k={`Cycle time · ${vehicleLabel(state, m, t)} (${BALANCE.finishes[finish].name})`}
+                  v={formatDuration(cycleMinutes(id, m, t, finish))}
+                />
+              );
+            }),
+          )}
+          {BALANCE.changeover.minutes[id] > 0 && (
             <KV
-              key={t}
-              k={`Cycle time · ${trimName(t)} (${BALANCE.finishes[state.product.finish[t]].name})`}
-              v={formatDuration(cycleMinutes(id, t, state.product.finish[t]))}
+              k="Retooling when switching models"
+              v={`${formatDuration(BALANCE.changeover.minutes[id])}${
+                st.lastModel ? ` · last ran ${BALANCE.models[st.lastModel].className}` : ''
+              }`}
             />
-          ))}
+          )}
         </Section>
 
         <Section title="Staffing">

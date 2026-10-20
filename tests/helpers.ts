@@ -1,6 +1,6 @@
 /** Shared helpers for the simulation/controller tests. */
 import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../src/config/balance';
-import type { ComponentId, StationId, TrimId } from '../src/config/balance';
+import type { ComponentId, ModelId, StationId, TrimId } from '../src/config/balance';
 import { applyCommand } from '../src/sim/commands';
 import type { Command, CommandResult } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
@@ -77,11 +77,17 @@ export function staffLine(s: GameState): void {
   mustOk(s, { type: 'assignOperator', station: 'final', delta: 1 });
 }
 
-/** Components needed to build `qty` vehicles of `trim` with the current product finish. */
-export function componentsFor(s: GameState, trim: TrimId, qty: number, stations: StationId[] = [...STATION_IDS]) {
+/** Components needed to build `qty` vehicles of `model`/`trim` with the current product finish. */
+export function componentsFor(
+  s: GameState,
+  trim: TrimId,
+  qty: number,
+  stations: StationId[] = [...STATION_IDS],
+  model: ModelId = 'sedan',
+) {
   const need: Record<ComponentId, number> = { steel: 0, powertrain: 0, interior: 0, wheels: 0, paint: 0 };
-  const recipe = BALANCE.trims[trim].recipe;
-  const finish = BALANCE.finishes[s.product.finish[trim]];
+  const recipe = BALANCE.models[model].trims[trim].recipe;
+  const finish = BALANCE.finishes[s.product.models[model].finish[trim]];
   for (const st of stations) {
     const parts = recipe[st];
     if (!parts) continue;
@@ -98,8 +104,14 @@ export function incoming(s: GameState, c: ComponentId): number {
 }
 
 /** Buy (from Corvan) whatever is missing to build `qty` vehicles of `trim`, excluding `skip` components. */
-export function buyShortfall(s: GameState, trim: TrimId, qty: number, skip: ComponentId[] = []): void {
-  const need = componentsFor(s, trim, qty);
+export function buyShortfall(
+  s: GameState,
+  trim: TrimId,
+  qty: number,
+  skip: ComponentId[] = [],
+  model: ModelId = 'sedan',
+): void {
+  const need = componentsFor(s, trim, qty, [...STATION_IDS], model);
   for (const c of COMPONENT_IDS) {
     if (skip.includes(c)) continue;
     const short = need[c] - s.inventory[c].qty - incoming(s, c);

@@ -46,7 +46,7 @@ function botAct(s: GameState): void {
   // Keep a little stock for the market when there is nothing else to do.
   const unreserved = s.yard.filter((v) => s.vehicles[v].orderId === null).length;
   if (s.plan.length === 0 && unreserved < 2 && s.yard.length < 6)
-    applyCommand(s, { type: 'scheduleBuild', trim: 'economy', quantity: 2 });
+    applyCommand(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
 
   // Purchasing: cover planned work plus vehicles in progress plus a small buffer.
   const need: Record<ComponentId, number> = { steel: 0, powertrain: 0, interior: 0, wheels: 0, paint: 0 };
@@ -78,7 +78,7 @@ describe('long automated run (balance bot)', () => {
   beforeAll(() => {
     startAssets = netAssets(s);
     staffLine(s);
-    applyCommand(s, { type: 'setMarketListed', trim: 'economy', listed: true });
+    applyCommand(s, { type: 'setMarketListed', model: 'sedan', trim: 'economy', listed: true });
     for (let t = 0; t < 10 * 1440; t++) {
       if (t % 30 === 0) botAct(s);
       step(s);

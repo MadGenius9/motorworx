@@ -1,5 +1,5 @@
 /** Every player action is a Command applied by sim/commands.ts `applyCommand(state, cmd)`. */
-import type { ComponentId, FinishId, StaffRole, StationId, TrimId } from './types';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from './types';
 
 export type Command =
   // Orders
@@ -11,7 +11,7 @@ export type Command =
   /** Adds a production job for the order's shortfall (qty − reserved − in production − already scheduled). */
   | { type: 'scheduleForOrder'; orderId: number }
   // Production plan
-  | { type: 'scheduleBuild'; trim: TrimId; quantity: number }
+  | { type: 'scheduleBuild'; model: ModelId; trim: TrimId; quantity: number }
   | { type: 'moveJob'; jobId: number; dir: -1 | 1 }
   /** Removes the unstarted remainder of a job. Started vehicles keep flowing. */
   | { type: 'cancelJob'; jobId: number }
@@ -29,12 +29,14 @@ export type Command =
   | { type: 'upgradeCapacity'; station: StationId }
   | { type: 'upgradeReliability'; station: StationId }
   | { type: 'upgradeWarehouse' }
-  // Product
-  | { type: 'setProductName'; name: string }
-  | { type: 'setColor'; colorId: string }
-  | { type: 'setFinish'; trim: TrimId; finish: FinishId }
-  | { type: 'setPrice'; trim: TrimId; price: number }
-  | { type: 'setMarketListed'; trim: TrimId; listed: boolean }
+  // Product (per model)
+  /** Buys the model's tooling (BALANCE.models[model].unlockCost) so it can be built and ordered. */
+  | { type: 'unlockModel'; model: ModelId }
+  | { type: 'setProductName'; model: ModelId; name: string }
+  | { type: 'setColor'; model: ModelId; colorId: string }
+  | { type: 'setFinish'; model: ModelId; trim: TrimId; finish: FinishId }
+  | { type: 'setPrice'; model: ModelId; trim: TrimId; price: number }
+  | { type: 'setMarketListed'; model: ModelId; trim: TrimId; listed: boolean }
   // Tutorial
   | { type: 'dismissTutorial' }
   | { type: 'showTutorial' };

@@ -1,10 +1,12 @@
-import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
+import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
 import { normaliseSeed } from './rng';
 import type {
   ComponentId,
   ComponentStock,
   ExpenseCategory,
   GameState,
+  ModelConfig,
+  ModelId,
   SalesOrder,
   StationId,
   StationState,
@@ -35,9 +37,29 @@ function makeStation(id: StationId): StationState {
     service: null,
     assigned: id === 'inspection' ? 0 : BALANCE.start.assignments[id],
     issues: [],
+    lastModel: null,
     energyAccrued: 0,
     completedTotal: 0,
     activeMinutesTotal: 0,
+  };
+}
+
+/** Default player settings for a model: default name/colour, base-value prices, every trim listed. */
+export function defaultModelConfig(m: ModelId, unlocked: boolean): ModelConfig {
+  const spec = BALANCE.models[m];
+  const price = {} as ModelConfig['price'];
+  const listed = {} as ModelConfig['marketListed'];
+  for (const t of TRIM_IDS) {
+    price[t] = spec.trims[t].baseValue;
+    listed[t] = true;
+  }
+  return {
+    unlocked,
+    name: spec.defaultName,
+    colorId: spec.defaultColorId,
+    finish: { ...BALANCE.start.defaultFinish },
+    price,
+    marketListed: listed,
   };
 }
 
@@ -61,6 +83,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
   const firstOrder: SalesOrder = {
     id: nextId++,
     dealer: fo.dealer,
+    model: fo.model,
     trim: fo.trim,
     quantity: fo.quantity,
     unitPrice: fo.unitPrice,
@@ -85,6 +108,9 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     lateWarned: false,
   };
 
+  const models = {} as Record<ModelId, ModelConfig>;
+  for (const m of MODEL_IDS) models[m] = defaultModelConfig(m, BALANCE.models[m].unlockCost <= 0 || S.unlockedModels.includes(m));
+
   const opex = {} as Record<ExpenseCategory, number>;
   for (const e of EXPENSES) opex[e] = 0;
 
@@ -97,13 +123,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     nextId,
     cash: S.cash,
     reputation: S.reputation,
-    product: {
-      name: S.productName,
-      colorId: S.colorId,
-      finish: { ...S.defaultFinish },
-      price: { ...S.defaultPrices },
-      marketListed: { economy: true, premium: true },
-    },
+    product: { models },
     inventory,
     shipments: [],
     warehouseLevel: 0,
@@ -153,9 +173,9 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     id: state.nextId++,
     time,
     kind: 'info',
-    text: `Welcome to MotorWorx! You've taken over a small ${S.productName} plant with $${S.cash.toLocaleString(
+    text: `Welcome to MotorWorx! You've taken over a small ${BALANCE.models[fo.model].defaultName} plant with $${S.cash.toLocaleString(
       'en-US',
-    )} in the bank. ${fo.dealer} wants ${fo.quantity} ${BALANCE.trims[fo.trim].name} cars — check the Orders tab.`,
+    )} in the bank. ${fo.dealer} wants ${fo.quantity} ${BALANCE.trims[fo.trim].name} ${BALANCE.models[fo.model].defaultName}s — check the Orders tab.`,
   });
 
   return state;

@@ -8,10 +8,12 @@ import {
   outstandingOrderValue,
   projectedDailyCosts,
   receivables,
+  unlockedModels,
+  vehicleLabel,
 } from '../../sim/selectors';
 import type { ExpenseCategory, LedgerCategory } from '../../sim/types';
 import { KV, Pill, Section } from '../common';
-import { clockOf, dayOf, formatMoney, trimName } from '../format';
+import { clockOf, dayOf, formatMoney } from '../format';
 import { useUi } from '../useGame';
 
 const OPEX_LABEL: Record<ExpenseCategory, string> = {
@@ -87,17 +89,19 @@ export function FinancesTab() {
       </Section>
 
       <Section title="Outlook" right={<Pill tone="info">Estimates</Pill>}>
-        {TRIM_IDS.map((t) => {
-          const p = estimatedProfitPerVehicle(state, t);
-          return (
-            <KV
-              key={t}
-              k={`Est. profit / ${trimName(t)} at ${formatMoney(state.product.price[t])}`}
-              v={r(p)}
-              tone={p >= 0 ? 'good' : 'bad'}
-            />
-          );
-        })}
+        {unlockedModels(state).flatMap((m) =>
+          TRIM_IDS.map((t) => {
+            const p = estimatedProfitPerVehicle(state, m, t);
+            return (
+              <KV
+                key={`${m}-${t}`}
+                k={`Est. profit / ${vehicleLabel(state, m, t)} at ${formatMoney(state.product.models[m].price[t])}`}
+                v={r(p)}
+                tone={p >= 0 ? 'good' : 'bad'}
+              />
+            );
+          }),
+        )}
         <KV k="Projected payroll / day" v={r(proj.payroll)} />
         <KV k="Projected overhead / day" v={r(proj.overhead)} />
         <KV k="Projected energy / day" v={r(proj.energy)} />

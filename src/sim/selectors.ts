@@ -1,12 +1,14 @@
 /**
  * Read-only helpers used by the UI and renderer. All functions are pure (never mutate state).
  */
-import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
+import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
+import type { TrimSpec } from '../config/balance';
 import type { Command } from './commandTypes';
 import type {
   ComponentId,
   FinishId,
   GameState,
+  ModelId,
   SalesOrder,
   StationId,
   TrimId,
@@ -89,6 +91,49 @@ export function trimName(t: TrimId): string {
   return BALANCE.trims[t].name;
 }
 
+/** Vehicle class, e.g. "SUV". */
+export function modelClassName(m: ModelId): string {
+  return BALANCE.models[m].className;
+}
+
+/** The player's name for a model, e.g. "Kestrel". */
+export function modelName(state: GameState, m: ModelId): string {
+  return state.product.models[m]?.name ?? BALANCE.models[m].defaultName;
+}
+
+/** "Kestrel Premium" */
+export function vehicleLabel(state: GameState, m: ModelId, t: TrimId): string {
+  return `${modelName(state, m)} ${trimName(t)}`;
+}
+
+export function trimSpec(m: ModelId, t: TrimId): TrimSpec {
+  return BALANCE.models[m].trims[t];
+}
+
+export function isModel(m: unknown): m is ModelId {
+  return typeof m === 'string' && (MODEL_IDS as readonly string[]).includes(m);
+}
+
+export function unlockedModels(state: GameState): ModelId[] {
+  return MODEL_IDS.filter((m) => state.product.models[m]?.unlocked);
+}
+
+/** Why the model's tooling can't be bought right now, or null if it can. */
+export function unlockBlocker(state: GameState, m: ModelId): string | null {
+  const spec = BALANCE.models[m];
+  if (state.product.models[m].unlocked) return `${modelName(state, m)} is already in production.`;
+  if (state.reputation < spec.minReputation) {
+    return `Needs reputation ${spec.minReputation} (you have ${Math.floor(state.reputation)}).`;
+  }
+  if (state.cash < spec.unlockCost) return `Needs ${formatMoney(spec.unlockCost)} cash (you have ${formatMoney(state.cash)}).`;
+  return null;
+}
+
+export function modelColorHex(state: GameState, m: ModelId): string {
+  const id = state.product.models[m].colorId;
+  return (BALANCE.colors.find((c) => c.id === id) ?? BALANCE.colors[0]).hex;
+}
+
 // ───────────────────────────── stations ─────────────────────────────
 
 export function stationStaff(state: GameState, id: StationId): number {
@@ -131,14 +176,26 @@ export function queueCapacity(state: GameState, id: StationId): number {
   return BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * state.stations[id].capacityLevel;
 }
 
-export function cycleMinutes(id: StationId, trim: TrimId, finish: FinishId): number {
-  const base = Math.round(BALANCE.stations[id].baseMinutes * BALANCE.trims[trim].timeMult);
+/** Work minutes for one vehicle at a station, excluding any model changeover. */
+export function cycleMinutes(id: StationId, model: ModelId, trim: TrimId, finish: FinishId): number {
+  const base = Math.round(BALANCE.stations[id].baseMinutes * BALANCE.trims[trim].timeMult * BALANCE.models[model].timeMult);
   return base + (id === 'paint' ? BALANCE.finishes[finish].paintMinutesAdd : 0);
 }
 
+/** Retooling minutes the station would add before starting a vehicle of `model` now. */
+export function changeoverMinutes(state: GameState, id: StationId, model: ModelId): number {
+  const last = state.stations[id].lastModel;
+  return last !== null && last !== model ? BALANCE.changeover.minutes[id] : 0;
+}
+
 /** Components consumed by `station` for one vehicle (paint station quantities × finish.paintMult). */
-export function recipeFor(trim: TrimId, station: StationId, finish: FinishId): Partial<Record<ComponentId, number>> {
-  const r = BALANCE.trims[trim].recipe[station];
+export function recipeFor(
+  model: ModelId,
+  trim: TrimId,
+  station: StationId,
+  finish: FinishId,
+): Partial<Record<ComponentId, number>> {
+  const r = trimSpec(model, trim).recipe[station];
   const out: Partial<Record<ComponentId, number>> = {};
   if (!r) return out;
   const mult = station === 'paint' ? BALANCE.finishes[finish].paintMult : 1;
@@ -280,9 +337,9 @@ export function projectedDailyCosts(state: GameState): { payroll: number; overhe
   return { payroll, overhead, energy, total: payroll + overhead + energy };
 }
 
-function demandPerDay(state: GameState, trim: TrimId, price: number, finish: FinishId): number {
+function demandPerDay(state: GameState, model: ModelId, trim: TrimId, price: number, finish: FinishId): number {
   const M = BALANCE.market;
-  const t = BALANCE.trims[trim];
+  const t = trimSpec(model, trim);
   const f = BALANCE.finishes[finish];
   const ref = t.baseValue + f.valueAdd;
   const priceFactor = Math.min(M.maxPriceFactor, Math.exp(-M.elasticity * (price / ref - 1)));
@@ -290,20 +347,27 @@ function demandPerDay(state: GameState, trim: TrimId, price: number, finish: Fin
 }
 
 /** Internal variant used by the engine for a specific vehicle finish. */
-export function marketDemandForFinish(state: GameState, trim: TrimId, price: number, finish: FinishId): number {
-  return demandPerDay(state, trim, price, finish);
+export function marketDemandForFinish(
+  state: GameState,
+  model: ModelId,
+  trim: TrimId,
+  price: number,
+  finish: FinishId,
+): number {
+  return demandPerDay(state, model, trim, price, finish);
 }
 
-export function marketDemandPerDay(state: GameState, trim: TrimId, price?: number): number {
-  return demandPerDay(state, trim, price ?? state.product.price[trim], state.product.finish[trim]);
+export function marketDemandPerDay(state: GameState, model: ModelId, trim: TrimId, price?: number): number {
+  const mc = state.product.models[model];
+  return demandPerDay(state, model, trim, price ?? mc.price[trim], mc.finish[trim]);
 }
 
-/** Estimated vehicles per day at the bottleneck station (ignores staffing and materials). */
-export function estimatedDailyThroughput(state: GameState, trim: TrimId): number {
-  const finish = state.product.finish[trim];
+/** Estimated vehicles per day at the bottleneck station (ignores staffing, materials and changeovers). */
+export function estimatedDailyThroughput(state: GameState, model: ModelId, trim: TrimId): number {
+  const finish = state.product.models[model].finish[trim];
   let worst = 0;
   for (const id of STATION_IDS) {
-    const per = cycleMinutes(id, trim, finish) / state.stations[id].slots.length;
+    const per = cycleMinutes(id, model, trim, finish) / state.stations[id].slots.length;
     if (per > worst) worst = per;
   }
   return worst > 0 ? MPD / worst : 0;
@@ -311,12 +375,13 @@ export function estimatedDailyThroughput(state: GameState, trim: TrimId): number
 
 export function estimateUnitCost(
   state: GameState,
+  model: ModelId,
   trim: TrimId,
 ): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number } {
-  const finish = state.product.finish[trim];
+  const finish = state.product.models[model].finish[trim];
   const qty: Partial<Record<ComponentId, number>> = {};
   for (const id of STATION_IDS) {
-    const r = recipeFor(trim, id, finish);
+    const r = recipeFor(model, trim, id, finish);
     for (const c of COMPONENT_IDS) {
       const q = r[c];
       if (q) qty[c] = (qty[c] ?? 0) + q;
@@ -331,14 +396,14 @@ export function estimateUnitCost(
     byComponent[c] = v;
     materials += v;
   }
-  const throughput = estimatedDailyThroughput(state, trim);
+  const throughput = estimatedDailyThroughput(state, model, trim);
   const laborOverhead = throughput > 0 ? Math.round(projectedDailyCosts(state).total / throughput) : 0;
   return { materials, byComponent, laborOverhead, total: materials + laborOverhead };
 }
 
-export function estimatedProfitPerVehicle(state: GameState, trim: TrimId, price?: number): number {
-  const p = price ?? state.product.price[trim];
-  return Math.round(p - estimateUnitCost(state, trim).total);
+export function estimatedProfitPerVehicle(state: GameState, model: ModelId, trim: TrimId, price?: number): number {
+  const p = price ?? state.product.models[model].price[trim];
+  return Math.round(p - estimateUnitCost(state, model, trim).total);
 }
 
 const PRODUCTION_STAGES: ReadonlySet<VehicleStage> = new Set<VehicleStage>([...STATION_IDS, 'rework']);
@@ -409,13 +474,14 @@ export function financeSummary(state: GameState): {
 /** Results over the recent delivered/sold vehicles still kept in state (older ones are pruned). */
 export function actualTrimResults(
   state: GameState,
+  model: ModelId,
   trim: TrimId,
 ): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number } {
   let n = 0;
   let price = 0;
   let cost = 0;
   for (const v of Object.values(state.vehicles)) {
-    if (v.trim !== trim || (v.stage !== 'delivered' && v.stage !== 'sold')) continue;
+    if (v.model !== model || v.trim !== trim || (v.stage !== 'delivered' && v.stage !== 'sold')) continue;
     n++;
     price += v.salePrice ?? 0;
     cost += v.cost;
@@ -706,7 +772,7 @@ export function getAlerts(state: GameState): Alert[] {
         id: `ready-${o.id}`,
         severity: p.late ? 'warning' : 'info',
         title: `${label} ready to deliver`,
-        cause: `All ${o.quantity} ${trimName(o.trim)} cars are in the yard${p.late ? ' — it is already late, deliver now' : ''}.`,
+        cause: `All ${o.quantity} ${vehicleLabel(state, o.model, o.trim)} cars are in the yard${p.late ? ' — it is already late, deliver now' : ''}.`,
         actions: [{ label: 'Deliver', action: { kind: 'command', command: { type: 'deliverOrder', orderId: o.id } } }],
       });
       continue;
@@ -751,6 +817,7 @@ export function getAlerts(state: GameState): Alert[] {
   const stamping = state.stations.stamping;
   const hasPlan = state.plan.some((j) => j.started < j.quantity);
   if (!hasPlan && stamping.slots.every((s) => s === null) && !state.gameOver) {
+    const model = unlockedModels(state)[0] ?? 'sedan';
     alerts.push({
       id: 'idle',
       severity: 'info',
@@ -758,9 +825,31 @@ export function getAlerts(state: GameState): Alert[] {
       cause: 'Stamping is idle because the production plan is empty. Schedule builds for orders or for the market.',
       actions: [
         { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
-        { label: 'Build 1 Economy', action: { kind: 'command', command: { type: 'scheduleBuild', trim: 'economy', quantity: 1 } } },
+        {
+          label: `Build 1 ${vehicleLabel(state, model, 'economy')}`,
+          action: { kind: 'command', command: { type: 'scheduleBuild', model, trim: 'economy', quantity: 1 } },
+        },
       ],
     });
+  }
+
+  // New model tooling within reach (only once the first order is paid, so it doesn't distract the tutorial).
+  if (state.stats.ordersPaid > 0 && !state.gameOver) {
+    for (const m of MODEL_IDS) {
+      if (state.product.models[m].unlocked || unlockBlocker(state, m) !== null) continue;
+      const spec = BALANCE.models[m];
+      // Only nudge when the tooling leaves a healthy cash buffer.
+      if (state.cash < spec.unlockCost * 1.5) continue;
+      alerts.push({
+        id: `unlock-${m}`,
+        severity: 'info',
+        title: `${spec.className} tooling available`,
+        cause: `You can afford to tool up for the ${modelName(state, m)} ${spec.className} (${formatMoney(
+          spec.unlockCost,
+        )}). New models bring new dealer orders and market demand.`,
+        actions: [{ label: 'Open Vehicles', action: { kind: 'openTab', tab: 'vehicles' } }],
+      });
+    }
   }
 
   // Warehouse

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { COMPONENT_IDS, STATION_IDS, TRIM_IDS } from '../src/config/balance';
+import { COMPONENT_IDS, MODEL_IDS, STATION_IDS, TRIM_IDS } from '../src/config/balance';
 import { applyCommand } from '../src/sim/commands';
 import type { Command } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
@@ -27,22 +27,23 @@ function randomCommand(s: GameState, rnd: () => number): Command {
       component: pick(COMPONENT_IDS),
       quantity: 1 + Math.floor(rnd() * 8),
     };
-  if (r < 0.53) return { type: 'scheduleBuild', trim: pick(TRIM_IDS), quantity: 1 + Math.floor(rnd() * 3) };
+  if (r < 0.53) return { type: 'scheduleBuild', model: pick(MODEL_IDS), trim: pick(TRIM_IDS), quantity: 1 + Math.floor(rnd() * 3) };
   if (r < 0.6) return { type: 'assignOperator', station: pick(STATION_IDS), delta: rnd() < 0.7 ? 1 : -1 };
   if (r < 0.65) return { type: 'hire', role: pick(['operator', 'inspector', 'technician'] as const), count: 1 };
   if (r < 0.67) return { type: 'fire', role: pick(['operator', 'inspector', 'technician'] as const) };
   if (r < 0.72) return { type: 'repair', station: pick(STATION_IDS) };
   if (r < 0.76) return { type: 'scheduleMaintenance', station: pick(STATION_IDS) };
-  if (r < 0.8) return { type: 'setMarketListed', trim: pick(TRIM_IDS), listed: rnd() < 0.7 };
+  if (r < 0.8) return { type: 'setMarketListed', model: pick(MODEL_IDS), trim: pick(TRIM_IDS), listed: rnd() < 0.7 };
   if (r < 0.83 && anyOrder) return { type: 'moveOrderPriority', orderId: anyOrder.id, dir: rnd() < 0.5 ? -1 : 1 };
   if (r < 0.86 && s.plan.length) return { type: 'cancelJob', jobId: pick(s.plan).id };
   if (r < 0.88 && s.plan.length) return { type: 'moveJob', jobId: pick(s.plan).id, dir: rnd() < 0.5 ? -1 : 1 };
   if (r < 0.9 && anyOrder) return { type: 'declineOrder', orderId: anyOrder.id };
-  if (r < 0.92) return { type: 'setFinish', trim: pick(TRIM_IDS), finish: rnd() < 0.5 ? 'solid' : 'metallic' };
-  if (r < 0.94) return { type: 'setPrice', trim: pick(TRIM_IDS), price: 15000 + Math.floor(rnd() * 25000) };
+  if (r < 0.92) return { type: 'setFinish', model: pick(MODEL_IDS), trim: pick(TRIM_IDS), finish: rnd() < 0.5 ? 'solid' : 'metallic' };
+  if (r < 0.94) return { type: 'setPrice', model: pick(MODEL_IDS), trim: pick(TRIM_IDS), price: 15000 + Math.floor(rnd() * 25000) };
   if (r < 0.95) return { type: 'upgradeCapacity', station: pick(STATION_IDS) };
   if (r < 0.96) return { type: 'upgradeReliability', station: pick(STATION_IDS) };
   if (r < 0.97) return { type: 'upgradeWarehouse' };
+  if (r < 0.975) return { type: 'unlockModel', model: pick(MODEL_IDS) };
   return { type: 'purchase', supplierId: 'corvan', component: pick(COMPONENT_IDS), quantity: 999 };
 }
 

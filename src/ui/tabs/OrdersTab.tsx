@@ -1,9 +1,9 @@
 import { useState } from 'react';
-import { TRIM_IDS, type TrimId } from '../../config/balance';
-import { estimatedProfitPerVehicle, orderProgress } from '../../sim/selectors';
+import { BALANCE, TRIM_IDS, type ModelId, type TrimId } from '../../config/balance';
+import { estimatedProfitPerVehicle, orderProgress, unlockedModels, vehicleLabel } from '../../sim/selectors';
 import type { SalesOrder } from '../../sim/types';
 import { ActionButton, Pill, Section } from '../common';
-import { formatDuration, formatMoney, formatTime, pct, trimName } from '../format';
+import { formatDuration, formatMoney, formatTime, pct } from '../format';
 import { useUi } from '../useGame';
 
 function Countdown({ minutes, label }: { minutes: number; label: string }) {
@@ -17,12 +17,12 @@ function Countdown({ minutes, label }: { minutes: number; label: string }) {
 
 function OfferCard({ o }: { o: SalesOrder }) {
   const { state, dispatch } = useUi();
-  const margin = estimatedProfitPerVehicle(state, o.trim, o.unitPrice);
+  const margin = estimatedProfitPerVehicle(state, o.model, o.trim, o.unitPrice);
   return (
     <div className="card">
       <div className="card-head">
         <b>{o.dealer}</b>
-        <Pill tone={o.trim === 'premium' ? 'accent' : 'muted'}>{trimName(o.trim)}</Pill>
+        <Pill tone={o.trim === 'premium' ? 'accent' : 'muted'}>{vehicleLabel(state, o.model, o.trim)}</Pill>
       </div>
       <div className="grid2">
         <span className="muted">Quantity</span>
@@ -79,7 +79,7 @@ function AcceptedCard({ o, idx, count }: { o: SalesOrder; idx: number; count: nu
           <b>{o.dealer}</b>
         </span>
         <span className="btn-group">
-          <Pill tone={o.trim === 'premium' ? 'accent' : 'muted'}>{trimName(o.trim)}</Pill>
+          <Pill tone={o.trim === 'premium' ? 'accent' : 'muted'}>{vehicleLabel(state, o.model, o.trim)}</Pill>
           <ActionButton
             small
             variant="ghost"
@@ -157,10 +157,11 @@ function AcceptedCard({ o, idx, count }: { o: SalesOrder; idx: number; count: nu
 
 function PlanSection() {
   const { state, dispatch } = useUi();
-  const [trim, setTrim] = useState<TrimId>('economy');
+  const [variant, setVariant] = useState('sedan:economy');
+  const [model, trim] = variant.split(':') as [ModelId, TrimId];
   const [qty, setQty] = useState('1');
   const q = Math.floor(Number(qty));
-  const qtyReason = !Number.isFinite(q) || q < 1 || q > 99 ? 'Enter a quantity from 1 to 99' : null;
+  const qtyReason = !Number.isFinite(q) || q < 1 || q > 50 ? 'Enter a quantity from 1 to 50' : null;
   return (
     <Section title="Production plan" right={<span className="muted small">Stamping starts jobs top to bottom</span>}>
       {state.plan.length === 0 && <p className="muted small">Nothing scheduled. Stamping will sit idle.</p>}
@@ -170,10 +171,16 @@ function PlanSection() {
           <div key={j.id} className="row-line">
             <span className="num muted">{i + 1}.</span>
             <span className="grow">
-              <b>{trimName(j.trim)}</b>{' '}
+              <b>{vehicleLabel(state, j.model, j.trim)}</b>{' '}
               <span className="num">
                 {j.started}/{j.quantity} started
               </span>
+              {i > 0 && state.plan[i - 1].model !== j.model && (
+                <span title="Stations retool when the model changes; batching the same model avoids this">
+                  {' '}
+                  <Pill tone="info">Retool: {BALANCE.models[j.model].className}</Pill>
+                </span>
+              )}
               <div className="small muted">{order ? `For ${order.dealer} (#${order.id})` : 'Stock build (unreserved)'}</div>
             </span>
             <span className="btn-group">
@@ -209,22 +216,24 @@ function PlanSection() {
         className="inline-form"
         onSubmit={(e) => {
           e.preventDefault();
-          if (!qtyReason) dispatch({ type: 'scheduleBuild', trim, quantity: q });
+          if (!qtyReason) dispatch({ type: 'scheduleBuild', model, trim, quantity: q });
         }}
       >
         <span className="small muted">Stock build:</span>
-        <select className="input" value={trim} onChange={(e) => setTrim(e.target.value as TrimId)} aria-label="Trim">
-          {TRIM_IDS.map((t) => (
-            <option key={t} value={t}>
-              {trimName(t)}
-            </option>
-          ))}
+        <select className="input" value={variant} onChange={(e) => setVariant(e.target.value)} aria-label="Model and trim">
+          {unlockedModels(state).flatMap((m) =>
+            TRIM_IDS.map((t) => (
+              <option key={`${m}:${t}`} value={`${m}:${t}`}>
+                {vehicleLabel(state, m, t)}
+              </option>
+            )),
+          )}
         </select>
         <input
           className="input input-num"
           type="number"
           min={1}
-          max={99}
+          max={50}
           value={qty}
           onChange={(e) => setQty(e.target.value)}
           aria-label="Quantity"
@@ -277,7 +286,7 @@ export function OrdersTab() {
               {history.map((o) => (
                 <tr key={o.id}>
                   <td>{o.dealer}</td>
-                  <td>{trimName(o.trim)}</td>
+                  <td>{vehicleLabel(state, o.model, o.trim)}</td>
                   <td className="r num">{o.quantity}</td>
                   <td className="r num">
                     {o.invoiceAmount !== null ? formatMoney(o.invoiceAmount) : '—'}

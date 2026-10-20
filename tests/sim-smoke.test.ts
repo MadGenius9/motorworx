@@ -140,7 +140,7 @@ function botTick(s: GameState) {
     else if (orderProgress(s, o).shortfall > 0) applyCommand(s, { type: 'scheduleForOrder', orderId: o.id });
   }
   const queued = s.plan.reduce((n, j) => n + j.quantity - j.started, 0);
-  if (queued < 2 && s.yard.length < 6) applyCommand(s, { type: 'scheduleBuild', trim: 'economy', quantity: 2 });
+  if (queued < 2 && s.yard.length < 6) applyCommand(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
   for (const c of COMPONENT_IDS) {
     const have = s.inventory[c].qty + s.shipments.filter((x) => x.component === c).reduce((n, x) => n + x.qty, 0);
     const target = c === 'steel' ? 12 : 6;
@@ -177,7 +177,7 @@ describe('balance sanity', () => {
       market: s.stats.marketSold,
       breakdowns: s.stats.breakdowns,
       rep: s.reputation,
-      est: estimateUnitCost(s, 'economy'),
+      est: estimateUnitCost(s, 'sedan', 'economy'),
       events: Object.keys(s.vehicles).length,
     });
     expect(s.gameOver).toBe(false);
