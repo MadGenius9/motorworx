@@ -35,6 +35,14 @@ The tutorial card (bottom left) walks through the first order:
 5. Watch the cars move through Stamping → Body Assembly → Paint → Final Assembly → Quality Inspection. Defects that inspection catches go to the rework bay.
 6. Press *Deliver* when all the cars are in the yard. Payment arrives after the order's payment terms.
 
+Once you have some reputation and spare cash, open **Vehicles** to buy tooling for the **SUV** or the **Pickup**. Each model has its own parts recipe, build time, price and demand, and dealers start ordering it. Stations lose time retooling whenever they switch models, so schedule the same model back to back.
+
+You are not alone: three rival makers (Vantor, Halberd, Sunline) compete for open-market buyers and react to your prices, run promotions, and launch new models over time. Dealer offers you leave waiting can be won by a rival. The **Market** tab shows market share, rival prices per segment and rival news.
+
+The **R&D** tab runs one research project at a time: faster stations, fewer defects, cheaper builds, more dealer orders and more appealing cars. Each project costs cash up front and finishes after some game hours.
+
+When reputation and cash allow, build a second (and third) plant from **Upgrades**. Each plant has its own line, staff and upgrades, and shares cash, parts, the yard and the production plan. Switch plants with the tabs above the factory, and dedicate a plant to one model (Stamping panel) to avoid retooling.
+
 Controls: drag to pan, mouse wheel to zoom, click a station for details and actions. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout

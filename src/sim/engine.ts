@@ -2,11 +2,13 @@
  * The simulation tick. `step(state)` advances exactly one game minute, deterministically
  * (all randomness via state.rng), in the order documented in docs/DESIGN.md.
  */
-import { BALANCE, COMPONENT_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
+import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
 import { addReputation, logEvent, postCash } from './ledger';
 import { chance, pick, randInt, randRange } from './rng';
 import {
+  changeoverMinutes,
   componentName,
+  describeEffect,
   cycleMinutes,
   dailyPayroll,
   dayOf,
@@ -14,18 +16,30 @@ import {
   formatMoney,
   formatTime,
   hazardPerActiveMinute,
+  operatingPlants,
+  plantOf,
+  plantPrefix,
+  stationOf,
   isInProduction,
   marketDemandForFinish,
+  modelColorHex,
   queueCapacity,
   recipeFor,
+  researchEffects,
+  rivalName,
+  rivalPriceIndex,
+  segmentShares,
   staffFactor,
   stationName,
-  trimName,
+  trimSpec,
+  unlockedModels,
+  vehicleLabel,
   yardCapacity,
 } from './selectors';
 import type {
   ComponentId,
   GameState,
+  ModelId,
   SalesOrder,
   StationId,
   StationIssue,
@@ -106,8 +120,30 @@ function consume(state: GameState, need: Partial<Record<ComponentId, number>>): 
   return { value, quality: units > 0 ? qSum / units : 1 };
 }
 
-function newSlot(vehicleId: number, required: number, componentQuality: number): WorkSlot {
-  return { vehicleId, progress: 0, required, done: false, componentQuality, outcome: null };
+function newSlot(vehicleId: number, required: number, componentQuality: number, changeover = 0): WorkSlot {
+  return { vehicleId, progress: 0, required: required + changeover, done: false, componentQuality, outcome: null, changeover };
+}
+
+/** Start work on a vehicle of `model` at a station: adds retooling time if the station last ran a different model. */
+function startSlot(
+  state: GameState,
+  plant: number,
+  id: StationId,
+  st: StationState,
+  v: Vehicle,
+  componentQuality: number,
+): WorkSlot {
+  const changeover = changeoverMinutes(state, id, v.model, plant);
+  if (changeover > 0) {
+    const from = st.lastModel as ModelId;
+    logEvent(
+      state,
+      'info',
+      `${plantPrefix(state, plant)}${stationName(id)} is retooling from ${BALANCE.models[from].className} to ${BALANCE.models[v.model].className} (+${changeover}m).`,
+    );
+  }
+  st.lastModel = v.model;
+  return newSlot(v.id, cycleMinutes(id, v.model, v.trim, v.finish, state), componentQuality, changeover);
 }
 
 /** Warranty cost and reputation hit for a vehicle leaving the plant with an undetected defect. */
@@ -149,7 +185,7 @@ export function allocateReservations(state: GameState): void {
     for (const vid of state.yard) {
       if (o.reserved.length >= o.quantity) break;
       const v = getVehicle(state, vid);
-      if (!v || v.orderId !== null || v.trim !== o.trim) continue;
+      if (!v || v.orderId !== null || v.model !== o.model || v.trim !== o.trim) continue;
       v.orderId = o.id;
       o.reserved.push(v.id);
     }
@@ -244,23 +280,42 @@ function round50(n: number): number {
   return Math.round(n / 50) * 50;
 }
 
+/** Weighted pick among unlocked models (no RNG draw when only one is unlocked). */
+function pickModel(state: GameState): ModelId {
+  const models = unlockedModels(state);
+  if (models.length <= 1) return models[0] ?? 'sedan';
+  const total = models.reduce((n, m) => n + BALANCE.models[m].orderWeight, 0);
+  let r = randRange(state, 0, total);
+  for (const m of models) {
+    r -= BALANCE.models[m].orderWeight;
+    if (r < 0) return m;
+  }
+  return models[models.length - 1];
+}
+
 function generateOffer(state: GameState): void {
   const O = BALANCE.orders;
   const open = state.orders.filter((o) => o.status === 'offered').length;
   if (open >= O.maxOpenOffers) return;
   const rep = state.reputation;
-  if (!chance(state, O.baseChance + rep * O.chancePerReputation)) return;
+  if (!chance(state, (O.baseChance + rep * O.chancePerReputation) * researchEffects(state).offerChanceMult)) return;
+  const model = pickModel(state);
   const trim = chance(state, O.premiumShareBase + rep * O.premiumSharePerRep) ? 'premium' : 'economy';
   const qty = randInt(state, O.minQty, O.maxQtyBase + Math.floor(rep / O.repPerExtraQty));
   const terms = pick(state, O.paymentTerms);
   const spread = randRange(state, O.priceSpread[0], O.priceSpread[1]);
-  const unitPrice = round50(BALANCE.trims[trim].baseValue * spread * (0.92 + rep / 600) * terms.priceMult);
+  // Dealers pay more where rivals price high and less where they undercut.
+  const active = state.market.rivals.filter((r) => r.segments[model][trim].active);
+  const avgIdx = active.length ? active.reduce((n, r) => n + rivalPriceIndex(state, r, model, trim), 0) / active.length : 1;
+  const follow = 1 + BALANCE.competition.offerPriceFollow * (avgIdx - 1);
+  const unitPrice = round50(trimSpec(model, trim).baseValue * spread * (0.92 + rep / 600) * terms.priceMult * follow);
   const slack = randRange(state, O.deadlineSlackMinutes[0], O.deadlineSlackMinutes[1]);
   const deadline = Math.round(state.time + O.deadlineBaseMinutes + qty * O.deadlineMinutesPerVehicle + slack);
   const dealer = pick(state, O.dealers);
   const order: SalesOrder = {
     id: state.nextId++,
     dealer,
+    model,
     trim,
     quantity: qty,
     unitPrice,
@@ -283,19 +338,35 @@ function generateOffer(state: GameState): void {
     paidAt: null,
     lateDays: 0,
     lateWarned: false,
+    contested: true,
+    lostTo: null,
   };
   state.orders.push(order);
   logEvent(
     state,
     'info',
-    `New offer #${order.id}: ${dealer} wants ${qty} ${trimName(trim)} @ ${formatMoney(unitPrice)} (due ${formatTime(deadline)}, ${terms.label}).`,
+    `New offer #${order.id}: ${dealer} wants ${qty} ${vehicleLabel(state, model, trim)} @ ${formatMoney(unitPrice)} (due ${formatTime(deadline)}, ${terms.label}).`,
   );
+}
+
+/** A rival wins an offer the player has left waiting. Prefers rivals active in the segment. */
+function maybeLoseOffer(state: GameState, o: SalesOrder): boolean {
+  const C = BALANCE.competition;
+  if (!o.contested || state.time % 60 !== 0 || state.time - o.createdAt < C.offerSnipeAfterMinutes) return false;
+  if (!chance(state, C.offerSnipeChancePerHour)) return false;
+  const inSegment = state.market.rivals.filter((r) => r.segments[o.model][o.trim].active);
+  const winner = pick(state, inSegment.length ? inSegment : state.market.rivals);
+  o.status = 'lost';
+  o.lostTo = winner.id;
+  logEvent(state, 'warn', `${rivalName(winner.id)} won offer #${o.id} from ${o.dealer} (${o.quantity} ${vehicleLabel(state, o.model, o.trim)}) while it waited.`);
+  return true;
 }
 
 function ordersTick(state: GameState): void {
   if (state.time % BALANCE.orders.checkEveryMinutes === 0) generateOffer(state);
   for (const o of state.orders) {
     if (o.status === 'offered') {
+      if (maybeLoseOffer(state, o)) continue;
       if (state.time >= o.offerExpiresAt) {
         o.status = 'expired';
         logEvent(state, 'info', `Offer #${o.id} from ${o.dealer} expired.`);
@@ -320,17 +391,18 @@ function ordersTick(state: GameState): void {
 
 // ───────────────────────────── stations ─────────────────────────────
 
-function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | null {
+function tryRoute(state: GameState, plant: number, id: StationId, slot: WorkSlot): string | null {
+  const P = plantOf(state, plant);
   const v = getVehicle(state, slot.vehicleId);
   if (!v) return null; // vehicle vanished (should never happen) — drop the slot
   if (id === 'inspection') {
     if (slot.outcome === 'rework') {
-      const rb = state.rework;
+      const rb = P.rework;
       const cap = BALANCE.quality.reworkQueueCapacity;
       // Gridlock breaker: the rework bay's finished car is waiting for space in the (full) inspection queue
       // while inspection is waiting for space in the (full) rework queue. Allow one extra so the loop drains.
       const gridlock =
-        rb.slot !== null && rb.slot.done && state.stations.inspection.queue.length >= queueCapacity(state, 'inspection');
+        rb.slot !== null && rb.slot.done && P.stations.inspection.queue.length >= queueCapacity(state, 'inspection', plant);
       if (rb.queue.length < cap || (gridlock && rb.queue.length < cap + 1)) {
         rb.queue.push(v.id);
         v.stage = 'rework';
@@ -350,8 +422,8 @@ function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | nul
     return 'Output blocked: finished-vehicle yard full';
   }
   const next = NEXT_STATION[id]!;
-  const dest = state.stations[next];
-  if (dest.queue.length < queueCapacity(state, next)) {
+  const dest = P.stations[next];
+  if (dest.queue.length < queueCapacity(state, next, plant)) {
     dest.queue.push(v.id);
     v.stage = next;
     return null;
@@ -359,29 +431,36 @@ function tryRoute(state: GameState, id: StationId, slot: WorkSlot): string | nul
   return `Output blocked: ${stationName(next)} queue full`;
 }
 
-function fillSlots(state: GameState, id: StationId, st: StationState): void {
+function fillSlots(state: GameState, plant: number, id: StationId, st: StationState): void {
   for (let i = 0; i < st.slots.length; i++) {
     if (st.slots[i] !== null) continue;
     if (id === 'stamping') {
-      const jobIdx = state.plan.findIndex((j) => j.started < j.quantity);
+      const allowed = plantOf(state, plant).allowedModels;
+      const jobIdx = state.plan.findIndex((j) => j.started < j.quantity && allowed.includes(j.model));
       if (jobIdx < 0) {
-        addIssue(st.issues, { kind: 'idle', text: 'No production scheduled' });
+        const other = state.plan.some((j) => j.started < j.quantity);
+        addIssue(st.issues, {
+          kind: 'idle',
+          text: other ? 'Planned jobs are for models this plant does not build' : 'No production scheduled',
+        });
         return;
       }
       const job = state.plan[jobIdx];
-      const finish = state.product.finish[job.trim];
-      const need = recipeFor(job.trim, 'stamping', finish);
+      const finish = state.product.models[job.model].finish[job.trim];
+      const need = recipeFor(job.model, job.trim, 'stamping', finish, state);
       const missing = missingMaterials(state, need);
       if (missing) {
         addIssue(st.issues, { kind: 'materials', text: missing.text, components: missing.components });
         return;
       }
       const used = consume(state, need);
-      const color = BALANCE.colors.find((c) => c.id === state.product.colorId)?.hex ?? BALANCE.colors[0].hex;
+      const color = modelColorHex(state, job.model);
       state.stats.vehiclesStarted++;
       const v: Vehicle = {
         id: state.nextId++,
         serial: `MX-${String(state.stats.vehiclesStarted).padStart(4, '0')}`,
+        plant,
+        model: job.model,
         trim: job.trim,
         finish,
         color,
@@ -401,7 +480,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       state.vehicles[String(v.id)] = v;
       job.started++;
       if (job.started >= job.quantity) state.plan.splice(jobIdx, 1);
-      st.slots[i] = newSlot(v.id, cycleMinutes('stamping', v.trim, v.finish), used.quality);
+      st.slots[i] = startSlot(state, plant, 'stamping', st, v, used.quality);
     } else {
       if (st.queue.length === 0) {
         addIssue(st.issues, { kind: 'idle', text: 'Waiting for vehicles' });
@@ -413,7 +492,7 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
         i--;
         continue;
       }
-      const need = recipeFor(v.trim, id, v.finish);
+      const need = recipeFor(v.model, v.trim, id, v.finish, state);
       const missing = missingMaterials(state, need);
       if (missing) {
         addIssue(st.issues, { kind: 'materials', text: missing.text, components: missing.components });
@@ -422,12 +501,12 @@ function fillSlots(state: GameState, id: StationId, st: StationState): void {
       const used = consume(state, need);
       v.cost += used.value;
       st.queue.shift();
-      st.slots[i] = newSlot(v.id, cycleMinutes(id, v.trim, v.finish), used.quality);
+      st.slots[i] = startSlot(state, plant, id, st, v, used.quality);
     }
   }
 }
 
-function completeSlot(state: GameState, id: StationId, st: StationState, slot: WorkSlot): void {
+function completeSlot(state: GameState, plant: number, id: StationId, st: StationState, slot: WorkSlot): void {
   slot.done = true;
   st.completedTotal++;
   const v = getVehicle(state, slot.vehicleId);
@@ -435,7 +514,7 @@ function completeSlot(state: GameState, id: StationId, st: StationState, slot: W
   const Q = BALANCE.quality;
   if (id === 'inspection') {
     if (v.defect) {
-      if (chance(state, detectionRate(state))) {
+      if (chance(state, detectionRate(state, plant))) {
         slot.outcome = 'rework';
         v.defectDetected = true;
         state.stats.defectsCaught++;
@@ -448,28 +527,33 @@ function completeSlot(state: GameState, id: StationId, st: StationState, slot: W
     }
     return;
   }
-  const p = Q.baseDefect + (1 - slot.componentQuality) * Q.componentWeight + (1 - st.condition / 100) * Q.conditionWeight;
+  const fx = researchEffects(state);
+  const p =
+    Q.baseDefect * fx.baseDefectMult +
+    (1 - slot.componentQuality) * Q.componentWeight * fx.componentDefectMult +
+    (1 - st.condition / 100) * Q.conditionWeight;
   if (chance(state, p)) {
     v.defect = true;
     v.defectNotes.push(stationName(id));
   }
 }
 
-function breakDown(state: GameState, id: StationId, st: StationState): void {
+function breakDown(state: GameState, plant: number, id: StationId, st: StationState): void {
   st.broken = true;
   state.stats.breakdowns++;
   const R = BALANCE.equipment.repair;
   logEvent(
     state,
     'bad',
-    `${stationName(id)} broke down! Production there is stopped — repair costs ${formatMoney(R.cost)} and takes ${Math.round(
+    `${plantPrefix(state, plant)}${stationName(id)} broke down! Production there is stopped — repair costs ${formatMoney(R.cost)} and takes ${Math.round(
       R.minutes / 60,
     )}h.`,
   );
 }
 
-function tickStation(state: GameState, id: StationId): void {
-  const st = state.stations[id];
+function tickStation(state: GameState, plant: number, id: StationId): void {
+  const st = stationOf(state, id, plant);
+  const at = plantPrefix(state, plant);
   st.issues = [];
   const E = BALANCE.equipment;
 
@@ -479,11 +563,11 @@ function tickStation(state: GameState, id: StationId): void {
     if (svc.remaining <= 0) {
       if (svc.kind === 'maintenance') {
         st.condition = 100;
-        logEvent(state, 'good', `Maintenance finished: ${stationName(id)} is back to 100% condition.`);
+        logEvent(state, 'good', `Maintenance finished: ${at}${stationName(id)} is back to 100% condition.`);
       } else {
         st.broken = false;
         st.condition = Math.max(st.condition, E.repair.restoreCondition);
-        logEvent(state, 'good', `Repair finished: ${stationName(id)} is running again (${Math.round(st.condition)}% condition).`);
+        logEvent(state, 'good', `Repair finished: ${at}${stationName(id)} is running again (${Math.round(st.condition)}% condition).`);
       }
       st.service = null;
     } else {
@@ -503,24 +587,24 @@ function tickStation(state: GameState, id: StationId): void {
   for (let i = 0; i < st.slots.length; i++) {
     const slot = st.slots[i];
     if (!slot || !slot.done) continue;
-    const blocked = tryRoute(state, id, slot);
+    const blocked = tryRoute(state, plant, id, slot);
     if (blocked) addIssue(st.issues, { kind: 'downstream', text: blocked });
     else st.slots[i] = null;
   }
 
   // 2. Fill empty slots.
-  const sf = staffFactor(state, id);
+  const sf = staffFactor(state, id, plant);
   if (sf <= 0) {
     addIssue(st.issues, { kind: 'staff', text: id === 'inspection' ? 'No inspectors on staff' : 'No operators assigned' });
   } else {
-    fillSlots(state, id, st);
+    fillSlots(state, plant, id, st);
   }
 
   // 3. Work.
   let worked = false;
   if (sf > 0) {
     const S = BALANCE.stations[id];
-    const wear = S.wearPerActiveMinute * Math.pow(E.reliabilityWearMult, st.reliabilityLevel) * sf;
+    const wear = S.wearPerActiveMinute * Math.pow(E.reliabilityWearMult, st.reliabilityLevel) * researchEffects(state).wearMult * sf;
     for (const slot of st.slots) {
       if (!slot || slot.done) continue;
       worked = true;
@@ -528,7 +612,7 @@ function tickStation(state: GameState, id: StationId): void {
       st.condition = Math.max(0, st.condition - wear);
       st.energyAccrued += S.energyPerActiveHour / 60;
       st.activeMinutesTotal++;
-      if (slot.progress >= slot.required - 1e-9) completeSlot(state, id, st, slot);
+      if (slot.progress >= slot.required - 1e-9) completeSlot(state, plant, id, st, slot);
     }
     if (sf < 1 && st.slots.some((s) => s !== null)) {
       const have = id === 'inspection' ? state.staff.inspector : st.assigned;
@@ -542,18 +626,18 @@ function tickStation(state: GameState, id: StationId): void {
 
   // 4. Breakdown roll.
   if (worked) {
-    if (st.condition <= 0) breakDown(state, id, st);
-    else if (st.condition < E.hazardThreshold && chance(state, hazardPerActiveMinute(state, id))) breakDown(state, id, st);
+    if (st.condition <= 0) breakDown(state, plant, id, st);
+    else if (st.condition < E.hazardThreshold && chance(state, hazardPerActiveMinute(state, id, plant))) breakDown(state, plant, id, st);
   }
 }
 
-function tickRework(state: GameState): void {
-  const rb = state.rework;
+function tickRework(state: GameState, plant: number): void {
+  const rb = plantOf(state, plant).rework;
   rb.issues = [];
   const Q = BALANCE.quality;
   if (rb.slot && rb.slot.done) {
-    const insp = state.stations.inspection;
-    if (insp.queue.length < queueCapacity(state, 'inspection')) {
+    const insp = stationOf(state, 'inspection', plant);
+    if (insp.queue.length < queueCapacity(state, 'inspection', plant)) {
       const v = getVehicle(state, rb.slot.vehicleId);
       if (v) {
         insp.queue.push(v.id);
@@ -614,41 +698,120 @@ function receiveShipments(state: GameState): void {
 
 function marketSales(state: GameState): void {
   const M = BALANCE.market;
-  for (const trim of TRIM_IDS) {
-    if (!state.product.marketListed[trim]) continue;
-    let v: Vehicle | undefined;
-    for (const vid of state.yard) {
-      const c = getVehicle(state, vid);
-      if (c && c.orderId === null && c.trim === trim) {
-        v = c;
-        break;
+  const C = BALANCE.competition;
+  for (const model of MODEL_IDS) {
+    const mc = state.product.models[model];
+    for (const trim of TRIM_IDS) {
+      let v: Vehicle | undefined;
+      if (mc.unlocked && mc.marketListed[trim]) {
+        for (const vid of state.yard) {
+          const c = getVehicle(state, vid);
+          if (c && c.orderId === null && c.model === model && c.trim === trim) {
+            v = c;
+            break;
+          }
+        }
       }
+      // Rivals sell their expected share of the segment this interval (the player competes only with stock on offer).
+      const seg = segmentShares(state, model, trim, { playerPresent: !!v, finish: v?.finish });
+      const segmentUnits = (trimSpec(model, trim).baseDemandPerDay * C.marketSizeCompanies * M.checkEveryMinutes) / MPD;
+      for (const r of seg.rivals) {
+        if (r.share > 0) state.market.today.rivals[r.id] = (state.market.today.rivals[r.id] ?? 0) + segmentUnits * r.share;
+      }
+      if (!v) continue;
+      const price = mc.price[trim];
+      const p = (marketDemandForFinish(state, model, trim, price, v.finish) * M.checkEveryMinutes) / MPD;
+      if (!chance(state, p)) continue;
+      const label = vehicleLabel(state, model, trim);
+      state.finance.revenue += price;
+      state.finance.today.revenue += price;
+      recognizeSale(state, v, price, 'sold');
+      postCash(state, 'sales', `Market sale: ${v.serial} (${label})`, price);
+      addReputation(state, M.repPerSale);
+      state.stats.marketSold++;
+      state.market.today.player++;
+      logEvent(state, 'good', `Sold ${v.serial} (${label}) on the open market for ${formatMoney(price)}.`);
+      handleEscapedDefect(state, v);
     }
-    if (!v) continue;
-    const price = state.product.price[trim];
-    const p = (marketDemandForFinish(state, trim, price, v.finish) * M.checkEveryMinutes) / MPD;
-    if (!chance(state, p)) continue;
-    state.finance.revenue += price;
-    state.finance.today.revenue += price;
-    recognizeSale(state, v, price, 'sold');
-    postCash(state, 'sales', `Market sale: ${v.serial} (${trimName(trim)})`, price);
-    addReputation(state, M.repPerSale);
-    state.stats.marketSold++;
-    logEvent(state, 'good', `Sold ${v.serial} (${trimName(trim)}) on the open market for ${formatMoney(price)}.`);
-    handleEscapedDefect(state, v);
   }
 }
 
+/** Daily rival moves: launches, price reactions to their share, promotions and reputation drift. */
+function rivalsMidnight(state: GameState): void {
+  const C = BALANCE.competition;
+  const day = dayOf(state.time);
+  const fair = 1 / C.marketSizeCompanies;
+  for (const r of state.market.rivals) {
+    const spec = BALANCE.competition.rivals.find((x) => x.id === r.id);
+    if (!spec) continue;
+    const activeSegs: [ModelId, (typeof TRIM_IDS)[number]][] = [];
+    for (const m of MODEL_IDS) {
+      const launch = spec.launchDay[m];
+      for (const t of TRIM_IDS) {
+        const seg = r.segments[m][t];
+        if (!seg.active && launch !== null && day >= launch) {
+          seg.active = true;
+          if (t === TRIM_IDS[0]) logEvent(state, 'info', `${spec.name} launched a ${BALANCE.models[m].className} — more competition for buyers.`);
+        }
+        if (!seg.active) continue;
+        activeSegs.push([m, t]);
+        const mc = state.product.models[m];
+        const share = segmentShares(state, m, t, { playerPresent: mc.unlocked && mc.marketListed[t] }).rivals.find((x) => x.id === r.id)?.share ?? 0;
+        if (share < fair * C.fairBand[0]) seg.priceIndex -= C.priceStep;
+        else if (share > fair * C.fairBand[1]) seg.priceIndex += C.priceStep;
+        else {
+          const gap = spec.priceIndex - seg.priceIndex;
+          seg.priceIndex += Math.sign(gap) * Math.min(Math.abs(gap), C.priceStep / 2);
+        }
+        seg.priceIndex = Math.min(C.maxPriceIndex, Math.max(C.minPriceIndex, Math.round(seg.priceIndex * 1000) / 1000));
+        if (seg.promoUntil !== null && state.time >= seg.promoUntil) seg.promoUntil = null;
+      }
+    }
+    if (activeSegs.length && chance(state, C.promoChancePerDay)) {
+      const [m, t] = pick(state, activeSegs);
+      r.segments[m][t].promoUntil = state.time + C.promoDays * MPD;
+      logEvent(
+        state,
+        'info',
+        `${spec.name} is running a ${Math.round(C.promoDiscount * 100)}% promotion on its ${BALANCE.trims[t].name} ${
+          BALANCE.models[m].className
+        } for ${C.promoDays} days.`,
+      );
+    }
+    r.reputation += Math.sign(C.repTarget - r.reputation) * Math.min(C.repDrift, Math.abs(C.repTarget - r.reputation));
+  }
+  const mk = state.market;
+  const closed = { ...mk.today, rivals: Object.fromEntries(Object.entries(mk.today.rivals).map(([k, n]) => [k, Math.round(n * 10) / 10])) };
+  mk.history.push(closed);
+  if (mk.history.length > C.shareHistoryDays) mk.history.splice(0, mk.history.length - C.shareHistoryDays);
+  mk.today = { day, player: 0, rivals: Object.fromEntries(mk.rivals.map((r) => [r.id, 0])) };
+}
+
+function researchTick(state: GameState): void {
+  const a = state.research.active;
+  if (!a) return;
+  a.remaining -= 1;
+  if (a.remaining > 0) return;
+  state.research.completed.push(a.id);
+  state.research.active = null;
+  const p = BALANCE.research.projects[a.id];
+  logEvent(state, 'good', `Research complete: ${p?.name ?? a.id}. ${p ? describeEffect(p.effect).join('; ') : ''}.`);
+}
+
 function midnight(state: GameState): void {
+  rivalsMidnight(state);
   const endedDay = dayOf(state.time - 1);
   const payroll = dailyPayroll(state);
   postCash(state, 'payroll', `Payroll — day ${endedDay}`, -payroll);
   let energy = 0;
-  for (const id of STATION_IDS) {
-    energy += state.stations[id].energyAccrued;
-    state.stations[id].energyAccrued = 0;
+  for (const p of state.plants) {
+    for (const id of STATION_IDS) {
+      energy += p.stations[id].energyAccrued;
+      p.stations[id].energyAccrued = 0;
+    }
   }
-  const utilities = Math.round(BALANCE.overhead.dailyBase + energy);
+  const sites = operatingPlants(state).length;
+  const utilities = Math.round(BALANCE.overhead.dailyBase * sites + energy);
   postCash(state, 'utilities', `Site overhead & energy — day ${endedDay}`, -utilities);
 
   const f = state.finance;
@@ -709,7 +872,7 @@ export function pruneHistory(state: GameState): void {
     closed.sort((a, b) => (b.closedAt ?? 0) - (a.closedAt ?? 0) || b.id - a.id);
     for (const v of closed.slice(CLOSED_VEHICLE_HISTORY)) delete state.vehicles[String(v.id)];
   }
-  const finalStatuses = new Set(['paid', 'declined', 'expired', 'cancelled']);
+  const finalStatuses = new Set(['paid', 'declined', 'expired', 'cancelled', 'lost']);
   const finals = state.orders.filter((o) => finalStatuses.has(o.status));
   if (finals.length > CLOSED_ORDER_HISTORY) {
     const drop = new Set(
@@ -729,12 +892,23 @@ export function step(state: GameState): void {
   if (state.gameOver) return;
   state.time += 1;
   receiveShipments(state);
-  tickStation(state, 'inspection');
-  tickRework(state);
-  tickStation(state, 'final');
-  tickStation(state, 'paint');
-  tickStation(state, 'body');
-  tickStation(state, 'stamping');
+  researchTick(state);
+  for (const p of state.plants) {
+    if (p.constructionRemaining > 0) {
+      p.constructionRemaining -= 1;
+      if (p.constructionRemaining <= 0) {
+        p.constructionRemaining = 0;
+        logEvent(state, 'good', `${p.name} plant is finished — staff its stations to start building.`);
+      }
+      continue;
+    }
+    tickStation(state, p.id, 'inspection');
+    tickRework(state, p.id);
+    tickStation(state, p.id, 'final');
+    tickStation(state, p.id, 'paint');
+    tickStation(state, p.id, 'body');
+    tickStation(state, p.id, 'stamping');
+  }
   if (state.time % BALANCE.market.checkEveryMinutes === 0) marketSales(state);
   ordersTick(state);
   if (state.time % MPD === 0) midnight(state);

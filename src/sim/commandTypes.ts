@@ -1,5 +1,5 @@
 /** Every player action is a Command applied by sim/commands.ts `applyCommand(state, cmd)`. */
-import type { ComponentId, FinishId, StaffRole, StationId, TrimId } from './types';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from './types';
 
 export type Command =
   // Orders
@@ -11,7 +11,7 @@ export type Command =
   /** Adds a production job for the order's shortfall (qty − reserved − in production − already scheduled). */
   | { type: 'scheduleForOrder'; orderId: number }
   // Production plan
-  | { type: 'scheduleBuild'; trim: TrimId; quantity: number }
+  | { type: 'scheduleBuild'; model: ModelId; trim: TrimId; quantity: number }
   | { type: 'moveJob'; jobId: number; dir: -1 | 1 }
   /** Removes the unstarted remainder of a job. Started vehicles keep flowing. */
   | { type: 'cancelJob'; jobId: number }
@@ -20,21 +20,36 @@ export type Command =
   // Staff
   | { type: 'hire'; role: StaffRole; count: number }
   | { type: 'fire'; role: StaffRole }
-  /** Operators only; inspection cannot be assigned (it uses all inspectors). */
-  | { type: 'assignOperator'; station: StationId; delta: 1 | -1 }
+  /**
+   * Moves one free worker onto (+1) or off (−1) a station. Operators staff the production stations;
+   * Quality Inspection takes inspectors. `plant` defaults to 0.
+   */
+  | { type: 'assignOperator'; station: StationId; delta: 1 | -1; plant?: number }
   // Equipment
-  | { type: 'scheduleMaintenance'; station: StationId }
-  | { type: 'repair'; station: StationId }
+  | { type: 'scheduleMaintenance'; station: StationId; plant?: number }
+  | { type: 'repair'; station: StationId; plant?: number }
   // Upgrades
-  | { type: 'upgradeCapacity'; station: StationId }
-  | { type: 'upgradeReliability'; station: StationId }
+  | { type: 'upgradeCapacity'; station: StationId; plant?: number }
+  | { type: 'upgradeReliability'; station: StationId; plant?: number }
+  // Plants
+  /** Buys and starts building the next plant site. */
+  | { type: 'buildPlant' }
+  /** Allows or forbids a plant to start a model. At least one model must stay allowed. */
+  | { type: 'setPlantModel'; plant: number; model: ModelId; allowed: boolean }
   | { type: 'upgradeWarehouse' }
-  // Product
-  | { type: 'setProductName'; name: string }
-  | { type: 'setColor'; colorId: string }
-  | { type: 'setFinish'; trim: TrimId; finish: FinishId }
-  | { type: 'setPrice'; trim: TrimId; price: number }
-  | { type: 'setMarketListed'; trim: TrimId; listed: boolean }
+  // Product (per model)
+  /** Buys the model's tooling (BALANCE.models[model].unlockCost) so it can be built and ordered. */
+  | { type: 'unlockModel'; model: ModelId }
+  | { type: 'setProductName'; model: ModelId; name: string }
+  | { type: 'setColor'; model: ModelId; colorId: string }
+  | { type: 'setFinish'; model: ModelId; trim: TrimId; finish: FinishId }
+  | { type: 'setPrice'; model: ModelId; trim: TrimId; price: number }
+  | { type: 'setMarketListed'; model: ModelId; trim: TrimId; listed: boolean }
+  // Research
+  /** Pays the project's cost and starts it in the R&D lab (one at a time). */
+  | { type: 'startResearch'; project: string }
+  /** Stops the active project. Progress and money are lost. */
+  | { type: 'cancelResearch' }
   // Tutorial
   | { type: 'dismissTutorial' }
   | { type: 'showTutorial' };

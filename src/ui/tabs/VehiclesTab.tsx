@@ -1,28 +1,47 @@
-import { BALANCE, COMPONENT_IDS, FINISH_IDS, STATION_IDS, TRIM_IDS, type FinishId, type TrimId } from '../../config/balance';
+import { useState } from 'react';
+import {
+  BALANCE,
+  COMPONENT_IDS,
+  FINISH_IDS,
+  MODEL_IDS,
+  STATION_IDS,
+  TRIM_IDS,
+  type FinishId,
+  type ModelId,
+  type TrimId,
+} from '../../config/balance';
 import {
   actualTrimResults,
   cycleMinutes,
   estimateUnitCost,
   estimatedProfitPerVehicle,
   marketDemandPerDay,
+  modelName,
+  researchAppeal,
+  trimSpec,
+  unlockBlocker,
+  vehicleLabel,
   vehiclesInStage,
 } from '../../sim/selectors';
 import type { VehicleStage } from '../../sim/types';
-import { CommitInput, KV, Pill, Section, Swatch } from '../common';
-import { formatDuration, formatMoney, num, stationName, trimName } from '../format';
+import { ActionButton, CommitInput, ConfirmDialog, KV, Pill, Section, Swatch } from '../common';
+import { componentsPerVehicle, formatDuration, formatMoney, num, stationName, trimName } from '../format';
 import { useUi } from '../useGame';
 
-function TrimCard({ trim }: { trim: TrimId }) {
+function TrimCard({ model, trim }: { model: ModelId; trim: TrimId }) {
   const { state, dispatch, notify } = useUi();
-  const finish = state.product.finish[trim];
-  const price = state.product.price[trim];
-  const listed = state.product.marketListed[trim];
-  const t = BALANCE.trims[trim];
-  const est = estimateUnitCost(state, trim);
-  const estMargin = estimatedProfitPerVehicle(state, trim);
-  const actual = actualTrimResults(state, trim);
-  const appeal = t.appeal + BALANCE.finishes[finish].appealAdd;
+  const mc = state.product.models[model];
+  const finish = mc.finish[trim];
+  const price = mc.price[trim];
+  const listed = mc.marketListed[trim];
+  const t = trimSpec(model, trim);
+  const label = vehicleLabel(state, model, trim);
+  const est = estimateUnitCost(state, model, trim);
+  const estMargin = estimatedProfitPerVehicle(state, model, trim);
+  const actual = actualTrimResults(state, model, trim);
+  const appeal = t.appeal + BALANCE.finishes[finish].appealAdd + researchAppeal(state, trim);
   const refValue = t.baseValue + BALANCE.finishes[finish].valueAdd;
+  const key = `${model}-${trim}`;
 
   return (
     <div className="card">
@@ -31,12 +50,12 @@ function TrimCard({ trim }: { trim: TrimId }) {
         <span className="muted small">Reference value {formatMoney(refValue)}</span>
       </div>
       <div className="form-grid">
-        <label htmlFor={`finish-${trim}`}>Finish</label>
+        <label htmlFor={`finish-${key}`}>Finish</label>
         <select
-          id={`finish-${trim}`}
+          id={`finish-${key}`}
           className="input"
           value={finish}
-          onChange={(e) => dispatch({ type: 'setFinish', trim, finish: e.target.value as FinishId })}
+          onChange={(e) => dispatch({ type: 'setFinish', model, trim, finish: e.target.value as FinishId })}
         >
           {FINISH_IDS.map((f) => (
             <option key={f} value={f}>
@@ -50,7 +69,7 @@ function TrimCard({ trim }: { trim: TrimId }) {
           type="number"
           min={0}
           step={100}
-          ariaLabel={`${trimName(trim)} price`}
+          ariaLabel={`${label} price`}
           value={String(price)}
           onCommit={(v) => {
             const n = Math.round(Number(v));
@@ -58,28 +77,28 @@ function TrimCard({ trim }: { trim: TrimId }) {
               notify('Enter a valid price', false);
               return;
             }
-            dispatch({ type: 'setPrice', trim, price: n });
+            dispatch({ type: 'setPrice', model, trim, price: n });
           }}
         />
-        <label htmlFor={`listed-${trim}`}>Sell on open market</label>
+        <label htmlFor={`listed-${key}`}>Sell on open market</label>
         <label className="toggle">
           <input
-            id={`listed-${trim}`}
+            id={`listed-${key}`}
             type="checkbox"
             checked={listed}
-            onChange={(e) => dispatch({ type: 'setMarketListed', trim, listed: e.target.checked })}
+            onChange={(e) => dispatch({ type: 'setMarketListed', model, trim, listed: e.target.checked })}
           />
           <span>{listed ? 'Listed — unreserved yard cars are sold' : 'Not listed'}</span>
         </label>
       </div>
       <div className="grid2 small">
         <span className="muted">Market demand</span>
-        <span className="num">{marketDemandPerDay(state, trim).toFixed(2)} / day at this price</span>
+        <span className="num">{marketDemandPerDay(state, model, trim).toFixed(2)} / day at this price</span>
         <span className="muted">Appeal</span>
         <span className="num">{appeal}</span>
         <span className="muted">Cycle times</span>
         <span className="num">
-          {STATION_IDS.map((s) => `${stationName(s).split(' ')[0]} ${formatDuration(cycleMinutes(s, trim, finish))}`).join(' · ')}
+          {STATION_IDS.map((s) => `${stationName(s).split(' ')[0]} ${formatDuration(cycleMinutes(s, model, trim, finish, state))}`).join(' · ')}
         </span>
       </div>
 
@@ -101,7 +120,7 @@ function TrimCard({ trim }: { trim: TrimId }) {
             Actual results <Pill tone="good">Actual</Pill>
           </div>
           {actual.unitsSold === 0 ? (
-            <p className="muted small">No {trimName(trim)} vehicles delivered or sold yet.</p>
+            <p className="muted small">No {label} vehicles delivered or sold yet.</p>
           ) : (
             <>
               <KV k="Units sold" v={num(actual.unitsSold)} />
@@ -116,46 +135,149 @@ function TrimCard({ trim }: { trim: TrimId }) {
   );
 }
 
-function ProductEditor() {
-  const { state, dispatch, notify } = useUi();
+/** Tooling offer for a model that is not in production yet. */
+function LockedModel({ model }: { model: ModelId }) {
+  const { state, dispatch } = useUi();
+  const [confirming, setConfirming] = useState(false);
+  const spec = BALANCE.models[model];
+  const name = modelName(state, model);
+  const blocker = unlockBlocker(state, model);
   return (
-    <Section title="Product">
+    <div className="card">
+      <div className="card-head">
+        <b>
+          {name} {spec.className}
+        </b>
+        <Pill tone="muted">Not in production</Pill>
+      </div>
+      <p className="small">{spec.blurb}</p>
+      <div className="grid2 small">
+        <span className="muted">Tooling cost</span>
+        <span className="num">{formatMoney(spec.unlockCost)} (one-off, counted as capital investment)</span>
+        <span className="muted">Reputation needed</span>
+        <span className={`num${state.reputation < spec.minReputation ? ' tone-bad' : ''}`}>
+          {spec.minReputation} (you have {Math.floor(state.reputation)})
+        </span>
+        <span className="muted">Build time</span>
+        <span className="num">×{spec.timeMult.toFixed(2)} vs. the sedan baseline</span>
+      </div>
+      <table className="table">
+        <thead>
+          <tr>
+            <th>Trim</th>
+            <th className="r">Ref. value</th>
+            <th className="r">Steel</th>
+            <th className="r">Interior</th>
+            <th className="r">Demand/day</th>
+          </tr>
+        </thead>
+        <tbody>
+          {TRIM_IDS.map((t) => {
+            const ts = spec.trims[t];
+            const finish = state.product.models[model].finish[t];
+            return (
+              <tr key={t}>
+                <td>{trimName(t)}</td>
+                <td className="r num">{formatMoney(ts.baseValue)}</td>
+                <td className="r num">{componentsPerVehicle(model, t, finish, 'steel', state)}</td>
+                <td className="r num">{componentsPerVehicle(model, t, finish, 'interior', state)}</td>
+                <td className="r num">{ts.baseDemandPerDay.toFixed(1)}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p className="muted small">
+        Once tooled, dealers start ordering this model and you can schedule it. Stations lose time retooling whenever they
+        switch between models, so batch builds of the same model.
+      </p>
+      <ActionButton variant="primary" disabledReason={blocker} showReason onClick={() => setConfirming(true)}>
+        Buy tooling ({formatMoney(spec.unlockCost)})
+      </ActionButton>
+      {confirming && (
+        <ConfirmDialog
+          title={`Tool up for the ${name}?`}
+          message={`This spends ${formatMoney(spec.unlockCost)} of your ${formatMoney(state.cash)} cash on ${spec.className} tooling.`}
+          confirmLabel="Buy tooling"
+          onConfirm={() => {
+            setConfirming(false);
+            dispatch({ type: 'unlockModel', model });
+          }}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+function ModelEditor({ model }: { model: ModelId }) {
+  const { state, dispatch, notify } = useUi();
+  const mc = state.product.models[model];
+  const spec = BALANCE.models[model];
+  return (
+    <>
       <div className="form-grid">
-        <label>Model name</label>
+        <label>{spec.className} name</label>
         <CommitInput
-          ariaLabel="Model name"
+          ariaLabel={`${spec.className} name`}
           maxLength={24}
-          value={state.product.name}
+          value={mc.name}
           onCommit={(v) => {
             const name = v.trim();
             if (!name) {
               notify('Model name cannot be empty', false);
               return;
             }
-            dispatch({ type: 'setProductName', name });
+            dispatch({ type: 'setProductName', model, name });
           }}
         />
         <span>Colour</span>
-        <div className="swatches" role="radiogroup" aria-label="Colour">
+        <div className="swatches" role="radiogroup" aria-label={`${spec.className} colour`}>
           {BALANCE.colors.map((c) => (
             <button
               key={c.id}
               type="button"
               role="radio"
-              aria-checked={state.product.colorId === c.id}
-              className={`swatch-btn${state.product.colorId === c.id ? ' active' : ''}`}
+              aria-checked={mc.colorId === c.id}
+              className={`swatch-btn${mc.colorId === c.id ? ' active' : ''}`}
               style={{ background: c.hex }}
               title={c.name}
               aria-label={c.name}
-              onClick={() => dispatch({ type: 'setColor', colorId: c.id })}
+              onClick={() => dispatch({ type: 'setColor', model, colorId: c.id })}
             />
           ))}
         </div>
       </div>
       <p className="muted small">Colour and finish apply to vehicles started from now on.</p>
       {TRIM_IDS.map((t) => (
-        <TrimCard key={t} trim={t} />
+        <TrimCard key={t} model={model} trim={t} />
       ))}
+    </>
+  );
+}
+
+function ProductEditor() {
+  const { state } = useUi();
+  const [model, setModel] = useState<ModelId>('sedan');
+  const mc = state.product.models[model];
+  return (
+    <Section title="Product line">
+      <div className="segmented model-switch" role="tablist" aria-label="Vehicle model">
+        {MODEL_IDS.map((m) => (
+          <button
+            key={m}
+            type="button"
+            role="tab"
+            aria-selected={m === model}
+            className={m === model ? 'active' : ''}
+            onClick={() => setModel(m)}
+          >
+            {modelName(state, m)} <span className="small">{BALANCE.models[m].className}</span>
+            {!state.product.models[m].unlocked && ' 🔒'}
+          </button>
+        ))}
+      </div>
+      {mc.unlocked ? <ModelEditor model={model} /> : <LockedModel model={model} />}
     </Section>
   );
 }
@@ -189,7 +311,7 @@ export function VehiclesTab() {
         ) : (
           reworkVehicles.map((v) => (
             <div key={v.id} className="row-line small">
-              <Swatch hex={v.color} /> <b>{v.serial}</b> {trimName(v.trim)}
+              <Swatch hex={v.color} /> <b>{v.serial}</b> {vehicleLabel(state, v.model, v.trim)}
               <span className="muted grow">
                 Defect from {v.defectNotes.length ? v.defectNotes.join(', ') : 'unknown station'}
                 {v.reworkCount > 0 ? ` · reworked ${v.reworkCount}×` : ''}
@@ -206,7 +328,7 @@ export function VehiclesTab() {
             <thead>
               <tr>
                 <th>Serial</th>
-                <th>Trim</th>
+                <th>Model</th>
                 <th>Reserved to</th>
                 <th className="r">Cost</th>
               </tr>
@@ -218,7 +340,7 @@ export function VehiclesTab() {
                     <Swatch hex={v.color} /> {v.serial}
                     {v.reworkCount > 0 && <span className="muted small"> (reworked)</span>}
                   </td>
-                  <td>{trimName(v.trim)}</td>
+                  <td>{vehicleLabel(state, v.model, v.trim)}</td>
                   <td>{v.orderId !== null ? orderName(v.orderId) : <span className="muted">Unreserved — for market</span>}</td>
                   <td className="r num">{formatMoney(Math.round(v.cost))}</td>
                 </tr>

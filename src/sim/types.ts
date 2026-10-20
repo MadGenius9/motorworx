@@ -2,19 +2,26 @@
  * Simulation state. Everything here is plain JSON so it can be saved/loaded directly.
  * The simulation (src/sim) owns and mutates this; rendering and UI only read it.
  */
-import type { ComponentId, FinishId, StaffRole, StationId, TrimId } from '../config/balance';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from '../config/balance';
 
-export type { ComponentId, FinishId, StaffRole, StationId, TrimId };
+export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
 
-export const SAVE_VERSION = 1;
+/**
+ * Bump when the saved shape changes; add a migration in save.ts.
+ * v2 vehicle models, v3 rivals, v4 research, v5 multiple plants.
+ */
+export const SAVE_VERSION = 5;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
 
 export interface Vehicle {
   id: number;
+  /** Plant that built (or is building) the vehicle. */
+  plant: number;
   /** Human-readable serial e.g. "MX-0007". */
   serial: string;
+  model: ModelId;
   trim: TrimId;
   finish: FinishId;
   /** Hex colour fixed when the vehicle is started. */
@@ -54,6 +61,8 @@ export interface WorkSlot {
   componentQuality: number;
   /** Inspection only: result decided when inspection completes. */
   outcome: 'pass' | 'rework' | null;
+  /** Retooling minutes included in `required` because the station switched models. */
+  changeover: number;
 }
 
 export interface ServiceJob {
@@ -86,14 +95,28 @@ export interface StationState {
   condition: number;
   broken: boolean;
   service: ServiceJob | null;
-  /** Operators assigned (unused for inspection, which uses all inspectors). */
+  /** Staff assigned: operators, or inspectors at Quality Inspection. */
   assigned: number;
   issues: StationIssue[];
+  /** Model of the last job started here (null before the first job); a different model costs changeover time. */
+  lastModel: ModelId | null;
   /** Energy cost accrued since the last midnight bill. */
   energyAccrued: number;
   /** Lifetime counters. */
   completedTotal: number;
   activeMinutesTotal: number;
+}
+
+export interface PlantState {
+  /** Index into BALANCE.plants.sites. */
+  id: number;
+  name: string;
+  stations: Record<StationId, StationState>;
+  rework: ReworkBayState;
+  /** Models this plant's stamping will start. Restricting a plant to one model avoids retooling. */
+  allowedModels: ModelId[];
+  /** Minutes until construction finishes (0 = operating). */
+  constructionRemaining: number;
 }
 
 export interface ReworkBayState {
@@ -121,11 +144,21 @@ export interface Shipment {
   arrivesAt: number;
 }
 
-export type OrderStatus = 'offered' | 'accepted' | 'delivered' | 'paid' | 'declined' | 'expired' | 'cancelled';
+export type OrderStatus =
+  | 'offered'
+  | 'accepted'
+  | 'delivered'
+  | 'paid'
+  | 'declined'
+  | 'expired'
+  | 'cancelled'
+  /** A rival won the offer before the player answered. */
+  | 'lost';
 
 export interface SalesOrder {
   id: number;
   dealer: string;
+  model: ModelId;
   trim: TrimId;
   quantity: number;
   unitPrice: number;
@@ -151,10 +184,15 @@ export interface SalesOrder {
   lateDays: number;
   /** Set once when the deadline passes while undelivered (to log one warning). */
   lateWarned: boolean;
+  /** Rivals may win this offer if the player waits (false for the tutorial's first order). */
+  contested: boolean;
+  /** Rival that won the offer (status 'lost'). */
+  lostTo: string | null;
 }
 
 export interface ProductionJob {
   id: number;
+  model: ModelId;
   trim: TrimId;
   quantity: number;
   /** Vehicles already started at stamping from this job. */
@@ -174,7 +212,8 @@ export type LedgerCategory =
   | 'hiring'
   | 'severance'
   | 'penalty'
-  | 'upgrade';
+  | 'upgrade'
+  | 'research';
 
 export interface LedgerEntry {
   id: number;
@@ -196,7 +235,8 @@ export type ExpenseCategory =
   | 'warranty'
   | 'hiring'
   | 'severance'
-  | 'penalty';
+  | 'penalty'
+  | 'research';
 
 export interface DailySummary {
   day: number;
@@ -233,13 +273,56 @@ export interface EventLogEntry {
   text: string;
 }
 
-export interface ProductConfig {
+/** Player settings for one vehicle model. */
+export interface ModelConfig {
+  /** Tooling bought: the model can be scheduled and dealers order it. */
+  unlocked: boolean;
   name: string;
   colorId: string;
   finish: Record<TrimId, FinishId>;
   price: Record<TrimId, number>;
   /** Whether unreserved finished vehicles of this trim are offered on the open market. */
   marketListed: Record<TrimId, boolean>;
+}
+
+export interface ProductConfig {
+  models: Record<ModelId, ModelConfig>;
+}
+
+/** A rival's position in one model × trim segment. */
+export interface RivalSegment {
+  /** False until the rival launches this model (BALANCE.competition.rivals[].launchDay). */
+  active: boolean;
+  /** Current price as a multiple of the segment reference value. */
+  priceIndex: number;
+  /** A promotion discounts the price until this time, or null. */
+  promoUntil: number | null;
+}
+
+export interface RivalState {
+  id: string;
+  reputation: number;
+  segments: Record<ModelId, Record<TrimId, RivalSegment>>;
+}
+
+/** Open-market units sold per company in one day (rivals' figures are expected values). */
+export interface MarketDay {
+  day: number;
+  player: number;
+  rivals: Record<string, number>;
+}
+
+export interface MarketState {
+  rivals: RivalState[];
+  /** Running totals for the current day; pushed to history at midnight. */
+  today: MarketDay;
+  history: MarketDay[];
+}
+
+export interface ResearchState {
+  /** Finished project ids, in completion order. */
+  completed: string[];
+  active: { id: string; remaining: number; total: number } | null;
 }
 
 export interface GameStats {
@@ -272,13 +355,15 @@ export interface GameState {
   inventory: Record<ComponentId, ComponentStock>;
   shipments: Shipment[];
   warehouseLevel: number;
-  stations: Record<StationId, StationState>;
-  rework: ReworkBayState;
+  /** Plants, index = plant id. Plant 0 is the starting site. */
+  plants: PlantState[];
   /** All vehicles, keyed by id. Delivered/sold vehicles are pruned beyond a history limit. */
   vehicles: Record<string, Vehicle>;
   /** Finished vehicle ids in the yard, oldest first. */
   yard: number[];
   orders: SalesOrder[];
+  market: MarketState;
+  research: ResearchState;
   plan: ProductionJob[];
   staff: Record<StaffRole, number>;
   finance: FinanceState;

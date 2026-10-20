@@ -13,12 +13,79 @@ export type ComponentId = (typeof COMPONENT_IDS)[number];
 export const TRIM_IDS = ['economy', 'premium'] as const;
 export type TrimId = (typeof TRIM_IDS)[number];
 
+export const MODEL_IDS = ['sedan', 'suv', 'pickup'] as const;
+export type ModelId = (typeof MODEL_IDS)[number];
+
 export const FINISH_IDS = ['solid', 'metallic'] as const;
 export type FinishId = (typeof FINISH_IDS)[number];
 
 export type StaffRole = 'operator' | 'inspector' | 'technician';
 
 export type Recipe = Partial<Record<StationId, Partial<Record<ComponentId, number>>>>;
+
+/** What a completed research project changes. Multipliers stack multiplicatively, additions add up. */
+export interface ResearchEffect {
+  /** Cycle-time multiplier per station. */
+  cycleMult?: Partial<Record<StationId, number>>;
+  /** Multiplier on model changeover (retooling) minutes. */
+  changeoverMult?: number;
+  /** Multiplier on equipment wear. */
+  wearMult?: number;
+  /** Multiplier on the defect chance caused by component quality. */
+  componentDefectMult?: number;
+  /** Multiplier on the base defect chance. */
+  baseDefectMult?: number;
+  /** Added to the inspection detection rate. */
+  detectionAdd?: number;
+  /** Appeal added to every trim, or only to premium trims. */
+  appealAdd?: number;
+  premiumAppealAdd?: number;
+  /** Steel coils saved per vehicle at stamping (never below 1). */
+  steelSaved?: number;
+  /** Multiplier on the chance of a new dealer offer each hour. */
+  offerChanceMult?: number;
+}
+
+export interface ResearchProject {
+  name: string;
+  branch: 'process' | 'quality' | 'product';
+  blurb: string;
+  cost: number;
+  /** Game minutes the lab needs. */
+  minutes: number;
+  requires: string[];
+  effect: ResearchEffect;
+}
+
+/** Values for one model × trim combination. */
+export interface TrimSpec {
+  /** Reference market value; dealer order prices and market demand are measured against it. */
+  baseValue: number;
+  /** Customer appeal score (market demand scales with appeal / market.appealReference). */
+  appeal: number;
+  /** Open-market buyers per day at the reference price, reputation 50. */
+  baseDemandPerDay: number;
+  /** Components consumed at each station. */
+  recipe: Recipe;
+}
+
+export interface ModelSpec {
+  /** Vehicle class shown in the UI ("SUV"). */
+  className: string;
+  /** Default model name; the player can rename it. */
+  defaultName: string;
+  defaultColorId: string;
+  blurb: string;
+  /** One-off tooling investment to start building this model (0 = available from the start). */
+  unlockCost: number;
+  /** Reputation needed before the tooling can be bought. */
+  minReputation: number;
+  /** Multiplies every station's cycle time (on top of the trim multiplier). */
+  timeMult: number;
+  /** Relative chance that a dealer offer asks for this model (among unlocked models). */
+  orderWeight: number;
+  trims: Record<TrimId, TrimSpec>;
+}
 
 export const BALANCE = {
   time: {
@@ -38,8 +105,8 @@ export const BALANCE = {
     seed: 20261020,
     cash: 120_000,
     reputation: 50,
-    productName: 'Meridian',
-    colorId: 'ember',
+    /** Models the player can build from day 1. */
+    unlockedModels: ['sedan'] as ModelId[],
     /** Starting raw materials (bought earlier at Corvan prices/quality). */
     inventory: {
       steel: { qty: 6, unitCost: 1800, quality: 0.92 },
@@ -57,6 +124,7 @@ export const BALANCE = {
     /** A guaranteed easy first order so the tutorial has something to accept. */
     firstOrder: {
       dealer: 'Northgate Motors',
+      model: 'sedan' as ModelId,
       trim: 'economy' as TrimId,
       quantity: 3,
       unitPrice: 21_800,
@@ -64,7 +132,6 @@ export const BALANCE = {
       offerLifetimeMinutes: 24 * 60,
       paymentTermIndex: 1,
     },
-    defaultPrices: { economy: 21_500, premium: 33_500 } as Record<TrimId, number>,
     defaultFinish: { economy: 'solid', premium: 'metallic' } as Record<TrimId, FinishId>,
   },
 
@@ -103,35 +170,94 @@ export const BALANCE = {
     },
   ],
 
+  /** Trim levels shared by every model. Per-model values (recipe, value, demand) live in `models`. */
   trims: {
-    economy: {
-      name: 'Economy',
-      baseValue: 21_500,
-      appeal: 62,
+    economy: { name: 'Economy', timeMult: 1.0 },
+    premium: { name: 'Premium', timeMult: 1.35 },
+  } as Record<TrimId, { name: string; timeMult: number }>,
+
+  models: {
+    sedan: {
+      className: 'Sedan',
+      defaultName: 'Meridian',
+      defaultColorId: 'ember',
+      blurb: 'Compact four-door. Quick to build, steady demand.',
+      unlockCost: 0,
+      minReputation: 0,
       timeMult: 1.0,
-      baseDemandPerDay: 2.6,
-      recipe: {
-        stamping: { steel: 2 },
-        paint: { paint: 1 },
-        final: { powertrain: 1, interior: 1, wheels: 1 },
-      } as Recipe,
+      orderWeight: 1.0,
+      trims: {
+        economy: {
+          baseValue: 21_500,
+          appeal: 62,
+          baseDemandPerDay: 2.6,
+          recipe: { stamping: { steel: 2 }, paint: { paint: 1 }, final: { powertrain: 1, interior: 1, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 33_500,
+          appeal: 84,
+          baseDemandPerDay: 1.3,
+          recipe: { stamping: { steel: 3 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+      },
     },
-    premium: {
-      name: 'Premium',
-      baseValue: 33_500,
-      appeal: 84,
-      timeMult: 1.35,
-      baseDemandPerDay: 1.3,
-      recipe: {
-        stamping: { steel: 3 },
-        paint: { paint: 2 },
-        final: { powertrain: 1, interior: 2, wheels: 1 },
-      } as Recipe,
+    suv: {
+      className: 'SUV',
+      defaultName: 'Kestrel',
+      defaultColorId: 'cobalt',
+      blurb: 'Family crossover. Bigger margins, slower to build, needs a strong reputation.',
+      unlockCost: 90_000,
+      minReputation: 55,
+      timeMult: 1.25,
+      orderWeight: 0.8,
+      trims: {
+        economy: {
+          baseValue: 30_000,
+          appeal: 68,
+          baseDemandPerDay: 1.8,
+          recipe: { stamping: { steel: 3 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 43_000,
+          appeal: 88,
+          baseDemandPerDay: 1.0,
+          recipe: { stamping: { steel: 4 }, paint: { paint: 3 }, final: { powertrain: 1, interior: 3, wheels: 1 } },
+        },
+      },
     },
-  } as Record<
-    TrimId,
-    { name: string; baseValue: number; appeal: number; timeMult: number; baseDemandPerDay: number; recipe: Recipe }
-  >,
+    pickup: {
+      className: 'Pickup',
+      defaultName: 'Trailhand',
+      defaultColorId: 'graphite',
+      blurb: 'Work truck with a cargo bed. Heavy on steel, popular with fleet dealers.',
+      unlockCost: 110_000,
+      minReputation: 60,
+      timeMult: 1.15,
+      orderWeight: 0.9,
+      trims: {
+        economy: {
+          baseValue: 28_000,
+          appeal: 64,
+          baseDemandPerDay: 2.0,
+          recipe: { stamping: { steel: 4 }, paint: { paint: 2 }, final: { powertrain: 1, interior: 1, wheels: 1 } },
+        },
+        premium: {
+          baseValue: 39_500,
+          appeal: 80,
+          baseDemandPerDay: 1.0,
+          recipe: { stamping: { steel: 5 }, paint: { paint: 3 }, final: { powertrain: 1, interior: 2, wheels: 1 } },
+        },
+      },
+    },
+  } as Record<ModelId, ModelSpec>,
+
+  /**
+   * Retooling time added to a job when a station switches to a different model than its previous job.
+   * Batching the same model back to back avoids it.
+   */
+  changeover: {
+    minutes: { stamping: 45, body: 30, paint: 15, final: 20, inspection: 0 } as Record<StationId, number>,
+  },
 
   finishes: {
     solid: { name: 'Solid', paintMult: 1, paintMinutesAdd: 0, appealAdd: 0, valueAdd: 0 },
@@ -258,8 +384,25 @@ export const BALANCE = {
   },
 
   overhead: {
-    /** Fixed daily site costs (rent, utilities base, insurance). Billed at midnight with energy. */
+    /** Fixed daily site costs per operating plant (rent, utilities base, insurance). Billed at midnight with energy. */
     dailyBase: 3600,
+  },
+
+  /**
+   * Plants. The company starts with the first site; more can be bought. Every plant has its own five stations,
+   * rework bay, staffing and upgrades. Cash, the parts warehouse, the finished-vehicle yard, the production plan
+   * and maintenance technicians are shared.
+   */
+  plants: {
+    sites: [
+      { name: 'Riverside', cost: 0, minReputation: 0 },
+      { name: 'Eastgate', cost: 320_000, minReputation: 60 },
+      { name: 'Harborview', cost: 480_000, minReputation: 75 },
+    ],
+    /** Game minutes to build a new plant before it can run. */
+    constructionMinutes: 2 * 1440,
+    /** Condition of a new plant's equipment. */
+    newCondition: 100,
   },
 
   orders: {
@@ -316,6 +459,200 @@ export const BALANCE = {
     appealReference: 70,
     maxPriceFactor: 2.5,
     repPerSale: 0.15,
+  },
+
+  /**
+   * Rival manufacturers. Open-market buyers in each model × trim segment are shared between you and the
+   * rivals active in it by "attractiveness" (appeal × reputation × price factor, same formula as yours).
+   * Segment size = marketSizeCompanies × baseDemandPerDay, so at full parity you sell what you did without rivals.
+   */
+  competition: {
+    marketSizeCompanies: 4,
+    rivals: [
+      {
+        id: 'vantor',
+        name: 'Vantor Automotive',
+        color: '#3fa7d6',
+        strategy: 'Budget',
+        blurb: 'High-volume builder that undercuts on price and cuts deeper when it loses share.',
+        /** Price as a multiple of the segment reference value. */
+        priceIndex: 0.93,
+        /** Added to the segment's appeal score. */
+        appealAdj: -5,
+        reputation: 48,
+        /** Game day each model launches (0 = from the start, null = never). */
+        launchDay: { sedan: 0, suv: 5, pickup: 3 } as Record<ModelId, number | null>,
+      },
+      {
+        id: 'halberd',
+        name: 'Halberd Motors',
+        color: '#c94f6d',
+        strategy: 'Premium',
+        blurb: 'Established brand with polished cars and high prices. Rarely discounts.',
+        priceIndex: 1.08,
+        appealAdj: 6,
+        reputation: 64,
+        launchDay: { sedan: 0, suv: 0, pickup: null } as Record<ModelId, number | null>,
+      },
+      {
+        id: 'sunline',
+        name: 'Sunline Cars',
+        color: '#d9a441',
+        strategy: 'Balanced',
+        blurb: 'Mid-market all-rounder with a strong pickup line and frequent promotions.',
+        priceIndex: 1.0,
+        appealAdj: 0,
+        reputation: 52,
+        launchDay: { sedan: 0, suv: 8, pickup: 0 } as Record<ModelId, number | null>,
+      },
+    ] as {
+      id: string;
+      name: string;
+      color: string;
+      strategy: string;
+      blurb: string;
+      priceIndex: number;
+      appealAdj: number;
+      reputation: number;
+      launchDay: Record<ModelId, number | null>;
+    }[],
+    /** Each midnight a rival moves its price index by this step: down if its segment share is below fair, up if above. */
+    priceStep: 0.02,
+    /** Share band (as a multiple of the fair share 1/companies) inside which a rival drifts back toward its strategy price. */
+    fairBand: [0.8, 1.25] as [number, number],
+    minPriceIndex: 0.82,
+    maxPriceIndex: 1.22,
+    /** Chance per rival per day of starting a promotion in one random segment. */
+    promoChancePerDay: 0.2,
+    promoDiscount: 0.08,
+    promoDays: 2,
+    /** Rival reputation drifts toward this value by `repDrift` per day (the market's long-run average). */
+    repTarget: 55,
+    repDrift: 0.5,
+    /** Open dealer offers can be won by a rival: chance per hour once the offer is this old. */
+    offerSnipeAfterMinutes: 2 * 60,
+    offerSnipeChancePerHour: 0.05,
+    /** Dealer offer prices follow rival pricing: price × (1 + follow × (average rival index − 1)). */
+    offerPriceFollow: 0.5,
+    shareHistoryDays: 14,
+  },
+
+  /**
+   * R&D lab: one project at a time, paid up front (an operating expense), finished after `minutes` of game
+   * time. Effects are permanent. Cancelling keeps no progress and refunds nothing.
+   */
+  research: {
+    branches: { process: 'Process', quality: 'Quality', product: 'Product' } as Record<ResearchProject['branch'], string>,
+    projects: {
+      leanStamping: {
+        name: 'Lean Stamping',
+        branch: 'process',
+        blurb: 'Faster die changes and press scheduling.',
+        cost: 9_000,
+        minutes: 18 * 60,
+        requires: [],
+        effect: { cycleMult: { stamping: 0.85 } },
+      },
+      quickChange: {
+        name: 'Quick-Change Tooling',
+        branch: 'process',
+        blurb: 'Modular fixtures halve retooling between models.',
+        cost: 11_000,
+        minutes: 24 * 60,
+        requires: ['leanStamping'],
+        effect: { changeoverMult: 0.5 },
+      },
+      roboticWelding: {
+        name: 'Robotic Welding',
+        branch: 'process',
+        blurb: 'Welding robots on the body line.',
+        cost: 16_000,
+        minutes: 30 * 60,
+        requires: ['leanStamping'],
+        effect: { cycleMult: { body: 0.82 } },
+      },
+      lineBalancing: {
+        name: 'Line Balancing',
+        branch: 'process',
+        blurb: 'Rebalanced final assembly tasks remove the main bottleneck.',
+        cost: 22_000,
+        minutes: 36 * 60,
+        requires: ['roboticWelding', 'quickChange'],
+        effect: { cycleMult: { final: 0.85, paint: 0.92 } },
+      },
+      spc: {
+        name: 'Statistical Process Control',
+        branch: 'quality',
+        blurb: 'Incoming-part sampling: cheap parts cause fewer defects.',
+        cost: 7_000,
+        minutes: 16 * 60,
+        requires: [],
+        effect: { componentDefectMult: 0.6 },
+      },
+      predictiveMaintenance: {
+        name: 'Predictive Maintenance',
+        branch: 'quality',
+        blurb: 'Vibration sensors on every station slow wear.',
+        cost: 9_000,
+        minutes: 24 * 60,
+        requires: ['spc'],
+        effect: { wearMult: 0.7 },
+      },
+      visionInspection: {
+        name: 'Vision Inspection',
+        branch: 'quality',
+        blurb: 'Camera tunnel at inspection catches more defects.',
+        cost: 11_000,
+        minutes: 24 * 60,
+        requires: ['spc'],
+        effect: { detectionAdd: 0.12 },
+      },
+      zeroDefect: {
+        name: 'Zero-Defect Program',
+        branch: 'quality',
+        blurb: 'Plant-wide quality culture: fewer defects at every station.',
+        cost: 16_000,
+        minutes: 36 * 60,
+        requires: ['visionInspection', 'predictiveMaintenance'],
+        effect: { baseDefectMult: 0.5, componentDefectMult: 0.8 },
+      },
+      dealerNetwork: {
+        name: 'Dealer Network',
+        branch: 'product',
+        blurb: 'Regional sales reps bring in more dealer orders.',
+        cost: 10_000,
+        minutes: 16 * 60,
+        requires: [],
+        effect: { offerChanceMult: 1.4 },
+      },
+      premiumInteriors: {
+        name: 'Premium Interiors',
+        branch: 'product',
+        blurb: 'Better materials and design for every Premium trim.',
+        cost: 14_000,
+        minutes: 20 * 60,
+        requires: ['dealerNetwork'],
+        effect: { premiumAppealAdd: 8 },
+      },
+      lightweightPlatform: {
+        name: 'Lightweight Platform',
+        branch: 'product',
+        blurb: 'High-strength steel: one coil less per vehicle.',
+        cost: 26_000,
+        minutes: 36 * 60,
+        requires: ['dealerNetwork'],
+        effect: { steelSaved: 1 },
+      },
+      designStudio: {
+        name: 'Design Studio',
+        branch: 'product',
+        blurb: 'An in-house styling team makes every model more appealing.',
+        cost: 34_000,
+        minutes: 40 * 60,
+        requires: ['premiumInteriors', 'lightweightPlatform'],
+        effect: { appealAdd: 8 },
+      },
+    } as Record<string, ResearchProject>,
   },
 
   reputation: { min: 0, max: 100 },

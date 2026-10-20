@@ -12,11 +12,14 @@ import {
   formatDuration,
   formatTime,
   incomingUnits,
+  modelName,
+  plantOf,
   stationRequiredStaff,
   stationStaff,
   stationStatus,
   staffFactor,
   stockOnHand,
+  unlockedModels,
   warehouseCapacity,
   yardCapacity,
 } from '../sim/selectors';
@@ -112,6 +115,8 @@ export class FactoryRenderer {
   private hits: Hit[] = [];
 
   private selected: StationId | null = null;
+  /** Plant being shown. */
+  private plant = 0;
   private hover: HitTarget | null = null;
   private mouse: { x: number; y: number } | null = null;
   private drag: { sx: number; sy: number; camX: number; camY: number; moved: boolean; id: number } | null = null;
@@ -160,6 +165,14 @@ export class FactoryRenderer {
 
   setController(controller: IGameController): void {
     this.controller = controller;
+  }
+
+  /** Switch the plant on screen. Vehicle positions snap so cars don't fly between plants. */
+  setPlant(plant: number): void {
+    if (plant === this.plant) return;
+    this.plant = plant;
+    this.displayed.clear();
+    this.layout = null;
   }
 
   setSelected(id: StationId | null): void {
@@ -213,7 +226,7 @@ export class FactoryRenderer {
   }
 
   private worldBounds(): Rect {
-    if (!this.layout) this.layout = computeLayout(this.controller.state);
+    if (!this.layout) this.layout = computeLayout(this.controller.state, this.plant);
     return this.layout.bounds;
   }
 
@@ -345,7 +358,7 @@ export class FactoryRenderer {
       this.displayed.clear();
       this.lastState = state;
     }
-    const layout = computeLayout(state);
+    const layout = computeLayout(state, this.plant);
     const prevBounds = this.layout?.bounds;
     this.layout = layout;
     if (!this.userMoved && (!prevBounds || prevBounds.w !== layout.bounds.w || prevBounds.h !== layout.bounds.h)) {
@@ -378,7 +391,7 @@ export class FactoryRenderer {
     this.drawYard(state, layout);
 
     // Vehicles (lerped)
-    const targets = vehicleTargets(state, layout);
+    const targets = vehicleTargets(state, layout, this.plant);
     const k = dt > 0 ? 1 - Math.exp(-dt * 7) : 1;
     for (const id of Array.from(this.displayed.keys())) if (!targets.has(id)) this.displayed.delete(id);
     const list: { x: number; y: number; look: VehicleLook }[] = [];
@@ -402,6 +415,52 @@ export class FactoryRenderer {
     for (const id of STATION_IDS) this.drawMachines(state, layout.stations[id], simT, paused);
     for (const id of STATION_IDS) this.drawStationOverlay(state, layout.stations[id], realT);
     this.drawReworkOverlay(state, layout);
+    this.drawConstruction(state, layout, simT);
+  }
+
+  /** Hazard-striped cover over the line while the shown plant is still being built. */
+  private drawConstruction(state: GameState, layout: FactoryLayout, simT: number): void {
+    const P = plantOf(state, this.plant);
+    if (P.constructionRemaining <= 0) return;
+    const ctx = this.ctx;
+    const boxes = STATION_IDS.flatMap((id) => {
+      const sl = layout.stations[id];
+      return sl.queue ? [sl.box, sl.queue] : [sl.box];
+    });
+    boxes.push(layout.rework.box);
+    const x0 = Math.min(...boxes.map((b) => b.x)) - 12;
+    const y0 = Math.min(...boxes.map((b) => b.y)) - 30;
+    const x1 = Math.max(...boxes.map((b) => b.x + b.w)) + 12;
+    const y1 = Math.max(...boxes.map((b) => b.y + b.h)) + 12;
+    ctx.save();
+    ctx.fillStyle = 'rgba(22,24,27,0.78)';
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.beginPath();
+    ctx.rect(x0, y0, x1 - x0, y1 - y0);
+    ctx.clip();
+    ctx.strokeStyle = 'rgba(227,160,8,0.18)';
+    ctx.lineWidth = 14;
+    const off = (simT * 0.5) % 40;
+    for (let x = x0 - (y1 - y0) - 40 + off; x < x1; x += 40) {
+      ctx.beginPath();
+      ctx.moveTo(x, y1);
+      ctx.lineTo(x + (y1 - y0), y0);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const cx = (x0 + x1) / 2;
+    const cy = (y0 + y1) / 2;
+    const done = 1 - P.constructionRemaining / BALANCE.plants.constructionMinutes;
+    text(ctx, `${P.name.toUpperCase()} PLANT UNDER CONSTRUCTION`, cx, cy - 12, { size: 24, weight: 800, color: COLORS.blocked, align: 'center' });
+    text(ctx, `Ready in ${formatDuration(P.constructionRemaining)} · hire staff now and assign them when it opens`, cx, cy + 16, {
+      size: 13,
+      color: COLORS.text,
+      align: 'center',
+    });
+    ctx.fillStyle = COLORS.steel;
+    ctx.fillRect(cx - 160, cy + 32, 320, 8);
+    ctx.fillStyle = COLORS.blocked;
+    ctx.fillRect(cx - 160, cy + 32, 320 * Math.max(0, Math.min(1, done)), 8);
   }
 
   private buildHits(layout: FactoryLayout): Hit[] {
@@ -518,7 +577,7 @@ export class FactoryRenderer {
 
     const short = new Set<ComponentId>();
     for (const id of STATION_IDS) {
-      for (const is of state.stations[id].issues) if (is.kind === 'materials') is.components?.forEach((c) => short.add(c));
+      for (const is of plantOf(state, this.plant).stations[id].issues) if (is.kind === 'materials') is.components?.forEach((c) => short.add(c));
     }
     const incomingBy: Partial<Record<ComponentId, number>> = {};
     for (const s of state.shipments) incomingBy[s.component] = (incomingBy[s.component] ?? 0) + s.qty;
@@ -677,10 +736,19 @@ export class FactoryRenderer {
     ctx.fillStyle = COLORS.accent;
     ctx.fillRect(r.x, r.y + 10, 4, 34);
     text(ctx, 'MOTORWORX', r.x + 14, r.y + 30, { size: 22, weight: 800, color: COLORS.accent });
-    text(ctx, `PLANT 01 · ${state.product.name.toUpperCase()}`, r.x + 14, r.y + 48, { size: 10, weight: 600, color: COLORS.textDim });
+    const lineup = unlockedModels(state);
+    const lineupText = lineup.length === 1 ? modelName(state, lineup[0]).toUpperCase() : `${lineup.length} MODELS`;
+    const P = plantOf(state, this.plant);
+    text(ctx, `PLANT ${String(P.id + 1).padStart(2, '0')} · ${P.name.toUpperCase()} · ${lineupText}`, r.x + 14, r.y + 48, { size: 10, weight: 600, color: COLORS.textDim });
     text(ctx, formatTime(state.time), r.x + 14, r.y + 78, { size: 15, weight: 700, color: COLORS.text });
     text(ctx, `Built today: ${state.stats.builtToday}`, r.x + 14, r.y + 100, { size: 11, color: COLORS.textDim });
     text(ctx, `Total built: ${state.stats.vehiclesBuilt}`, r.x + 14, r.y + 116, { size: 11, color: COLORS.textDim });
+    const lab = state.research.active;
+    if (lab) {
+      const name = BALANCE.research.projects[lab.id]?.name ?? lab.id;
+      const f = lab.total > 0 ? 1 - lab.remaining / lab.total : 0;
+      text(ctx, `R&D: ${name} ${Math.floor(f * 100)}%`, r.x + 14, r.y + 132, { size: 11, color: COLORS.service });
+    }
     if (this.controller.paused) {
       text(ctx, 'PAUSED', r.x + r.w - 12, r.y + 78, { size: 11, weight: 800, color: COLORS.blocked, align: 'right' });
     }
@@ -747,8 +815,8 @@ export class FactoryRenderer {
   private drawStation(state: GameState, sl: StationLayout, realT: number): void {
     const ctx = this.ctx;
     const id = sl.id;
-    const st = state.stations[id];
-    const status = stationStatus(state, id);
+    const st = plantOf(state, this.plant).stations[id];
+    const status = stationStatus(state, id, this.plant);
     const sc = STATUS_COLOR[status];
     const target: HitTarget = { kind: 'station', id };
     const hov = this.isHovered(target);
@@ -828,8 +896,8 @@ export class FactoryRenderer {
     text(ctx, lv, b.x + b.w - 8, b.y + 33.5, { size: 9, weight: 600, color: COLORS.textDim, align: 'right', baseline: 'middle' });
 
     // Workers
-    const staff = stationStaff(state, id);
-    const req = stationRequiredStaff(state, id);
+    const staff = stationStaff(state, id, this.plant);
+    const req = stationRequiredStaff(state, id, this.plant);
     const icons = Math.min(6, Math.max(req, 1));
     for (let i = 0; i < icons; i++) {
       drawWorker(ctx, hx + 4 + i * 10, b.y + 54, i < staff, staff < req && i >= staff ? COLORS.blocked : COLORS.text);
@@ -845,7 +913,7 @@ export class FactoryRenderer {
 
     // Condition bar
     const cond = Math.max(0, Math.min(100, st.condition));
-    const risk = breakdownRisk(state, id);
+    const risk = breakdownRisk(state, id, this.plant);
     const eq = BALANCE.equipment;
     const cColor =
       cond < eq.dangerCondition || risk === 'high' ? COLORS.broken : cond < eq.warnCondition || risk === 'elevated' ? COLORS.blocked : COLORS.running;
@@ -860,7 +928,7 @@ export class FactoryRenderer {
     text(ctx, `${Math.round(cond)}%`, b.x + b.w - 8, barY + 3, { size: 10, weight: 600, color: cColor, align: 'right', baseline: 'middle' });
 
     // Slot rows
-    const sf = staffFactor(state, id);
+    const sf = staffFactor(state, id, this.plant);
     sl.slots.forEach((r, i) => {
       ctx.fillStyle = COLORS.panelDark;
       roundRectPath(ctx, r.x, r.y, r.w, r.h, 4);
@@ -887,7 +955,9 @@ export class FactoryRenderer {
             : COLORS.blocked
           : frozen
             ? COLORS.idle
-            : COLORS.running;
+            : (slot.changeover ?? 0) > slot.progress
+              ? COLORS.service
+              : COLORS.running;
         ctx.fillRect(px, py, pw * f, 4);
         if (slot.done) {
           const lbl = id === 'inspection' ? (slot.outcome === 'rework' ? 'REWORK' : 'PASS') : 'DONE';
@@ -921,8 +991,8 @@ export class FactoryRenderer {
   private drawMachines(state: GameState, sl: StationLayout, simT: number, paused: boolean): void {
     const ctx = this.ctx;
     const id = sl.id;
-    const st = state.stations[id];
-    const sf = staffFactor(state, id);
+    const st = plantOf(state, this.plant).stations[id];
+    const sf = staffFactor(state, id, this.plant);
     sl.slots.forEach((r, i) => {
       const slot = st.slots[i] ?? null;
       const active = !!slot && !slot.done && !st.broken && !st.service && sf > 0 && !paused;
@@ -1085,17 +1155,22 @@ export class FactoryRenderer {
       return { text: `NO ${first}${comps.length > 1 ? ` +${comps.length - 1}` : ''}`, color: COLORS.blocked, textColor: '#111' };
     }
     if (has('staff')) {
-      const sf = staffFactor(state, id);
+      const sf = staffFactor(state, id, this.plant);
       if (sf <= 0) return { text: id === 'inspection' ? 'NO INSPECTORS' : 'NO OPERATORS', color: COLORS.blocked, textColor: '#111' };
       return { text: 'UNDERSTAFFED', color: COLORS.blocked, textColor: '#111' };
     }
     if (has('cash')) return { text: 'NO CASH', color: COLORS.blocked, textColor: '#111' };
+    const retool = st.slots.find((x) => x && !x.done && (x.changeover ?? 0) > x.progress);
+    if (retool) {
+      const left = Math.ceil(((retool.changeover ?? 0) - retool.progress) / Math.max(0.01, staffFactor(state, id, this.plant)));
+      return { text: `RETOOLING · ${formatDuration(left)}`, color: COLORS.service, textColor: '#fff', wrench: true };
+    }
     return null;
   }
 
   private drawStationOverlay(state: GameState, sl: StationLayout, realT: number): void {
     const ctx = this.ctx;
-    const st = state.stations[sl.id];
+    const st = plantOf(state, this.plant).stations[sl.id];
     const b = sl.box;
     if (st.broken) {
       // Smoke puffs (real time: alarm stays visible when paused)
@@ -1129,7 +1204,7 @@ export class FactoryRenderer {
     const rw = layout.rework;
     const t: HitTarget = { kind: 'station', id: 'inspection' };
     const hov = this.isHovered(t);
-    this.panel(rw.box, 'REWORK BAY', null, `${state.rework.queue.length}/${BALANCE.quality.reworkQueueCapacity} waiting`);
+    this.panel(rw.box, 'REWORK BAY', null, `${plantOf(state, this.plant).rework.queue.length}/${BALANCE.quality.reworkQueueCapacity} waiting`);
     if (hov || this.selected === 'inspection') {
       ctx.strokeStyle = this.selected === 'inspection' ? 'rgba(240,124,30,0.6)' : COLORS.steelLight;
       ctx.lineWidth = 2;
@@ -1150,7 +1225,7 @@ export class FactoryRenderer {
     ctx.strokeStyle = COLORS.steel;
     ctx.lineWidth = 1;
     ctx.stroke();
-    const slot = state.rework.slot;
+    const slot = plantOf(state, this.plant).rework.slot;
     const py = r.y + r.h - 8;
     ctx.fillStyle = COLORS.bg;
     ctx.fillRect(r.x + 6, py, r.w - 12, 4);
@@ -1164,7 +1239,7 @@ export class FactoryRenderer {
   }
 
   private drawReworkOverlay(state: GameState, layout: FactoryLayout): void {
-    const rb = state.rework.issues ?? [];
+    const rb = plantOf(state, this.plant).rework.issues ?? [];
     const rw = layout.rework.box;
     let banner: Banner | null = null;
     if (rb.some((i) => i.kind === 'downstream')) banner = { text: 'OUTPUT BLOCKED', color: COLORS.blocked, textColor: '#111' };

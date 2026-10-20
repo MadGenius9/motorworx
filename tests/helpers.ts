@@ -1,10 +1,10 @@
 /** Shared helpers for the simulation/controller tests. */
 import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../src/config/balance';
-import type { ComponentId, StationId, TrimId } from '../src/config/balance';
+import type { ComponentId, ModelId, StationId, TrimId } from '../src/config/balance';
 import { applyCommand } from '../src/sim/commands';
 import type { Command, CommandResult } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
-import { orderProgress, queueCapacity } from '../src/sim/selectors';
+import { orderProgress, projectedDailyCosts, queueCapacity } from '../src/sim/selectors';
 import type { GameState, LedgerCategory, SalesOrder, Vehicle } from '../src/sim/types';
 import type { StorageLike } from '../src/game/GameController';
 
@@ -58,15 +58,16 @@ export function runUntil(
 
 /** Keeps every station above the breakdown hazard threshold so a test is not disturbed by random breakdowns. */
 export function healAll(s: GameState): void {
-  for (const id of STATION_IDS) s.stations[id].condition = 100;
+  for (const p of s.plants) for (const id of STATION_IDS) p.stations[id].condition = 100;
 }
 
 /** A sensible player repairs broken stations. */
 export function autoRepair(s: GameState): void {
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id });
-  }
+  for (const p of s.plants)
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id, plant: p.id });
+    }
 }
 
 /** Hire 3 operators and staff Paint (1) and Final Assembly (2), as the tutorial asks. */
@@ -77,11 +78,17 @@ export function staffLine(s: GameState): void {
   mustOk(s, { type: 'assignOperator', station: 'final', delta: 1 });
 }
 
-/** Components needed to build `qty` vehicles of `trim` with the current product finish. */
-export function componentsFor(s: GameState, trim: TrimId, qty: number, stations: StationId[] = [...STATION_IDS]) {
+/** Components needed to build `qty` vehicles of `model`/`trim` with the current product finish. */
+export function componentsFor(
+  s: GameState,
+  trim: TrimId,
+  qty: number,
+  stations: StationId[] = [...STATION_IDS],
+  model: ModelId = 'sedan',
+) {
   const need: Record<ComponentId, number> = { steel: 0, powertrain: 0, interior: 0, wheels: 0, paint: 0 };
-  const recipe = BALANCE.trims[trim].recipe;
-  const finish = BALANCE.finishes[s.product.finish[trim]];
+  const recipe = BALANCE.models[model].trims[trim].recipe;
+  const finish = BALANCE.finishes[s.product.models[model].finish[trim]];
   for (const st of stations) {
     const parts = recipe[st];
     if (!parts) continue;
@@ -98,8 +105,14 @@ export function incoming(s: GameState, c: ComponentId): number {
 }
 
 /** Buy (from Corvan) whatever is missing to build `qty` vehicles of `trim`, excluding `skip` components. */
-export function buyShortfall(s: GameState, trim: TrimId, qty: number, skip: ComponentId[] = []): void {
-  const need = componentsFor(s, trim, qty);
+export function buyShortfall(
+  s: GameState,
+  trim: TrimId,
+  qty: number,
+  skip: ComponentId[] = [],
+  model: ModelId = 'sedan',
+): void {
+  const need = componentsFor(s, trim, qty, [...STATION_IDS], model);
   for (const c of COMPONENT_IDS) {
     if (skip.includes(c)) continue;
     const short = need[c] - s.inventory[c].qty - incoming(s, c);
@@ -166,16 +179,34 @@ export function checkInvariants(s: GameState): string[] {
     else loc.set(id, where);
     if (!s.vehicles[id]) errs.push(`unknown vehicle ${id} at ${where}`);
   };
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    st.queue.forEach((v) => place(v, `${id}.queue`));
-    st.slots.forEach((sl) => sl && place(sl.vehicleId, `${id}.slot`));
-    if (st.queue.length > queueCapacity(s, id)) errs.push(`${id} queue ${st.queue.length} > cap ${queueCapacity(s, id)}`);
-    if (st.slots.length !== 1 + st.capacityLevel) errs.push(`${id} slots ${st.slots.length} != 1+capacityLevel`);
+  const plantAt = new Map<number, number>();
+  for (const p of s.plants) {
+    const at = (id: number, where: string) => {
+      place(id, where);
+      plantAt.set(id, p.id);
+    };
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      st.queue.forEach((v) => at(v, `${id}.queue`));
+      st.slots.forEach((sl) => sl && at(sl.vehicleId, `${id}.slot`));
+      if (st.queue.length > queueCapacity(s, id, p.id)) errs.push(`p${p.id} ${id} queue ${st.queue.length} > cap`);
+      if (st.slots.length !== 1 + st.capacityLevel) errs.push(`p${p.id} ${id} slots ${st.slots.length} != 1+capacityLevel`);
+      if (st.assigned < 0) errs.push(`p${p.id} ${id} negative staff`);
+    }
+    p.rework.queue.forEach((v) => at(v, 'rework.queue'));
+    if (p.rework.slot) at(p.rework.slot.vehicleId, 'rework.slot');
+    // The sim may hold one extra car to break a rework/inspection gridlock.
+    if (p.rework.queue.length > BALANCE.quality.reworkQueueCapacity + 1) errs.push(`p${p.id} rework queue over capacity`);
+    if (p.constructionRemaining > 0 && STATION_IDS.some((id) => p.stations[id].queue.length || p.stations[id].slots.some(Boolean))) {
+      errs.push(`p${p.id} works while under construction`);
+    }
   }
-  s.rework.queue.forEach((v) => place(v, 'rework.queue'));
-  if (s.rework.slot) place(s.rework.slot.vehicleId, 'rework.slot');
-  if (s.rework.queue.length > BALANCE.quality.reworkQueueCapacity) errs.push(`rework queue over capacity`);
+  // Staff assignments never exceed headcount.
+  let ops = 0;
+  let insp = 0;
+  for (const p of s.plants) for (const id of STATION_IDS) (id === 'inspection' ? (insp += p.stations[id].assigned) : (ops += p.stations[id].assigned));
+  if (ops > s.staff.operator) errs.push(`assigned operators ${ops} > ${s.staff.operator}`);
+  if (insp > s.staff.inspector) errs.push(`assigned inspectors ${insp} > ${s.staff.inspector}`);
   s.yard.forEach((v) => place(v, 'yard'));
   const yardCap = BALANCE.start.yardCapacity + s.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
   if (s.yard.length > yardCap) errs.push(`yard ${s.yard.length} > cap ${yardCap}`);
@@ -183,6 +214,8 @@ export function checkInvariants(s: GameState): string[] {
     const where = loc.get(v.id);
     if (!STAGE_OK(v.stage, where)) errs.push(`vehicle ${v.id} stage=${v.stage} but located at ${where ?? 'nowhere'}`);
     if (v.cost < -1e-6) errs.push(`vehicle ${v.id} negative cost`);
+    const pa = plantAt.get(v.id);
+    if (pa !== undefined && pa !== v.plant) errs.push(`vehicle ${v.id} of plant ${v.plant} found in plant ${pa}`);
   }
 
   // Reservations consistent.
@@ -219,4 +252,66 @@ export function mulberry32(seed: number): () => number {
     t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
+}
+
+/**
+ * A competent automated player for balance tests: takes on only what the line can build in time, buys
+ * parts just in time for scheduled and in-progress work (keeping a payroll reserve), keeps a little
+ * market stock, and maintains equipment. Call every 30 game minutes.
+ */
+export function competentBot(s: GameState, maxBacklog = 6): void {
+  const reserve = projectedDailyCosts(s).total * 1.2;
+  for (const p of s.plants)
+    for (const id of STATION_IDS) {
+      const st = p.stations[id];
+      if (st.broken && !st.service) applyCommand(s, { type: 'repair', station: id, plant: p.id });
+      else if (!st.broken && !st.service && st.condition < 45 && s.cash > reserve + BALANCE.equipment.maintenance.cost)
+        applyCommand(s, { type: 'scheduleMaintenance', station: id, plant: p.id });
+    }
+  for (const o of s.orders.filter((x) => x.status === 'accepted')) {
+    const p = orderProgress(s, o);
+    if (p.ready) applyCommand(s, { type: 'deliverOrder', orderId: o.id });
+    else if (p.shortfall > 0) applyCommand(s, { type: 'scheduleForOrder', orderId: o.id });
+  }
+  const queued = s.plan.reduce((n, j) => n + j.quantity - j.started, 0);
+  const wip = Object.values(s.vehicles).filter((v) => STATION_IDS.includes(v.stage as StationId) || v.stage === 'rework').length;
+  for (const o of s.orders.filter((x) => x.status === 'offered')) {
+    const hoursLeft = (o.deadline - s.time) / 60;
+    // ~2.5 h per car through the bottleneck, plus the cars already ahead of it.
+    const lines = s.plants.filter((p) => p.constructionRemaining <= 0 && p.stations.stamping.assigned > 0).length || 1;
+    if (queued + wip + o.quantity <= maxBacklog && hoursLeft > ((queued + wip + o.quantity) * 2.5) / lines + 8) {
+      applyCommand(s, { type: 'acceptOrder', orderId: o.id });
+      break;
+    }
+  }
+  const unreserved = s.yard.filter((v) => s.vehicles[String(v)].orderId === null).length;
+  if (queued === 0 && unreserved < 2 && s.cash > 40_000) {
+    applyCommand(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 2 });
+  }
+  // Just-in-time parts for planned + in-progress work.
+  const need: Record<ComponentId, number> = { steel: 0, powertrain: 0, interior: 0, wheels: 0, paint: 0 };
+  const add = (n: Record<ComponentId, number>) => COMPONENT_IDS.forEach((c) => (need[c] += n[c]));
+  for (const j of s.plan) add(componentsFor(s, j.trim, j.quantity - j.started, [...STATION_IDS], j.model));
+  for (const v of Object.values(s.vehicles)) {
+    if (v.stage === 'stamping' || v.stage === 'body') add(componentsFor(s, v.trim, 1, ['paint', 'final'], v.model));
+    else if (v.stage === 'paint') add(componentsFor(s, v.trim, 1, ['final'], v.model));
+  }
+  const byValue = [...COMPONENT_IDS].sort((a, b) => BALANCE.components[b].basePrice - BALANCE.components[a].basePrice);
+  for (const c of byValue) {
+    const short = need[c] - s.inventory[c].qty - incoming(s, c);
+    const affordable = Math.floor((s.cash - reserve) / BALANCE.components[c].basePrice);
+    const qty = Math.min(short, affordable);
+    if (qty > 0) applyCommand(s, { type: 'purchase', supplierId: 'corvan', component: c, quantity: qty });
+  }
+}
+
+/** Rebuilds the pre-plants (save version 4) layout from a current save object, for migration tests. */
+export function toV4Shape(save: Record<string, any>): Record<string, any> {
+  const out = structuredClone(save);
+  out.stations = out.plants[0].stations;
+  out.rework = out.plants[0].rework;
+  delete out.plants;
+  for (const v of Object.values(out.vehicles) as Record<string, unknown>[]) delete v.plant;
+  out.version = 4;
+  return out;
 }

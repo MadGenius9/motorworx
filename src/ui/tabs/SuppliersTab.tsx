@@ -1,15 +1,24 @@
 import { useState } from 'react';
-import { BALANCE, COMPONENT_IDS, TRIM_IDS, type ComponentId, type TrimId } from '../../config/balance';
-import { avgQuality, avgUnitCost, incomingUnits, stockOnHand, warehouseCapacity } from '../../sim/selectors';
+import { BALANCE, COMPONENT_IDS, TRIM_IDS, type ComponentId, type ModelId, type TrimId } from '../../config/balance';
+import {
+  avgQuality,
+  avgUnitCost,
+  incomingUnits,
+  stockOnHand,
+  unlockedModels,
+  vehicleLabel,
+  warehouseCapacity,
+} from '../../sim/selectors';
 import { ActionButton, Bar, Section } from '../common';
-import { componentName, componentsPerVehicle, formatDuration, formatMoney, formatTime, pct, trimName } from '../format';
+import { componentName, componentsPerVehicle, formatDuration, formatMoney, formatTime, pct } from '../format';
 import { useUi } from '../useGame';
 
 export function SuppliersTab() {
   const { state, dispatch } = useUi();
   const [component, setComponent] = useState<ComponentId>('powertrain');
   const [qtyText, setQtyText] = useState('3');
-  const [helperTrim, setHelperTrim] = useState<TrimId>('economy');
+  const [helperVariant, setHelperVariant] = useState('sedan:economy');
+  const [helperModel, helperTrim] = helperVariant.split(':') as [ModelId, TrimId];
   const [helperCars, setHelperCars] = useState('3');
 
   const cap = warehouseCapacity(state);
@@ -22,7 +31,7 @@ export function SuppliersTab() {
 
   const bump = (n: number) => setQtyText(String(Math.min(999, Math.max(1, (qtyValid ? qty : 0) + n))));
   const helperN = Math.floor(Number(helperCars));
-  const perCar = componentsPerVehicle(helperTrim, state.product.finish[helperTrim], component);
+  const perCar = componentsPerVehicle(helperModel, helperTrim, state.product.models[helperModel].finish[helperTrim], component, state);
   const helperQty = Number.isFinite(helperN) && helperN > 0 ? perCar * helperN : 0;
 
   return (
@@ -112,12 +121,14 @@ export function SuppliersTab() {
               aria-label="Number of cars"
               onChange={(e) => setHelperCars(e.target.value)}
             />
-            <select className="input" value={helperTrim} aria-label="Trim" onChange={(e) => setHelperTrim(e.target.value as TrimId)}>
-              {TRIM_IDS.map((t) => (
-                <option key={t} value={t}>
-                  {trimName(t)}
-                </option>
-              ))}
+            <select className="input" value={helperVariant} aria-label="Model and trim" onChange={(e) => setHelperVariant(e.target.value)}>
+              {unlockedModels(state).flatMap((m) =>
+                TRIM_IDS.map((t) => (
+                  <option key={`${m}:${t}`} value={`${m}:${t}`}>
+                    {vehicleLabel(state, m, t)}
+                  </option>
+                )),
+              )}
             </select>
             cars
             <button

@@ -3,9 +3,9 @@
  * Pure functions of the (read-only) game state: recomputed every frame, cheap.
  */
 import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
-import type { ComponentId, FinishId, StationId, TrimId } from '../config/balance';
+import type { ComponentId, FinishId, ModelId, StationId, TrimId } from '../config/balance';
 import type { GameState, WorkSlot } from '../sim/types';
-import { queueCapacity, yardCapacity } from '../sim/selectors';
+import { plantOf, queueCapacity, yardCapacity } from '../sim/selectors';
 
 export interface Rect {
   x: number;
@@ -97,19 +97,20 @@ export const G = {
 
 const MAX_QUEUE = BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * (G.maxSlots - 1);
 
-export function computeLayout(state: GameState): FactoryLayout {
+export function computeLayout(state: GameState, plant = 0): FactoryLayout {
+  const P = plantOf(state, plant);
   const stations = {} as Record<StationId, StationLayout>;
   let x = G.margin;
   const rowsTop = G.lineTop + G.header;
   const conveyorY = rowsTop + G.rowH / 2;
 
   for (const id of STATION_IDS) {
-    const st = state.stations[id];
+    const st = P.stations[id];
     const nSlots = Math.max(1, Math.min(G.maxSlots, st.slots.length));
     let queue: Rect | null = null;
     const queueSpots: Rect[] = [];
     if (id !== 'stamping') {
-      const cap = Math.max(0, Math.min(MAX_QUEUE + 4, queueCapacity(state, id)));
+      const cap = Math.max(0, Math.min(MAX_QUEUE + 4, queueCapacity(state, id, plant)));
       const spotsTop = conveyorY - G.queueSpotH / 2;
       queue = { x, y: spotsTop - 20, w: G.queueW, h: 20 + Math.max(1, cap) * G.queueSpotH + 4 };
       for (let i = 0; i < cap; i++) {
@@ -212,6 +213,7 @@ export interface VehicleLook {
   progress: number;
   color: string;
   finish: FinishId;
+  model: ModelId;
   trim: TrimId;
   /** Draw scale relative to G.carLen. */
   scale: number;
@@ -245,12 +247,16 @@ const QUEUE_PHASE: Record<StationId, BuildPhase> = {
   inspection: 'complete',
 };
 
+/** Build progress of the vehicle itself (retooling time at the start of a slot doesn't advance it). */
 function slotProgress(s: WorkSlot): number {
   if (s.done) return 1;
-  return s.required > 0 ? Math.max(0, Math.min(1, s.progress / s.required)) : 0;
+  const c = s.changeover ?? 0;
+  const work = s.required - c;
+  return work > 0 ? Math.max(0, Math.min(1, (s.progress - c) / work)) : 0;
 }
 
-export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<number, VehicleTarget> {
+export function vehicleTargets(state: GameState, layout: FactoryLayout, plant = 0): Map<number, VehicleTarget> {
+  const P = plantOf(state, plant);
   const out = new Map<number, VehicleTarget>();
   const put = (vid: number, x: number, y: number, phase: BuildPhase, progress: number, scale: number) => {
     const v = state.vehicles[String(vid)];
@@ -263,6 +269,7 @@ export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<num
         progress,
         color: v.color,
         finish: v.finish,
+        model: v.model,
         trim: v.trim,
         scale,
         reworkTag: v.defectDetected,
@@ -272,7 +279,7 @@ export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<num
   };
 
   for (const id of STATION_IDS) {
-    const st = state.stations[id];
+    const st = P.stations[id];
     const sl = layout.stations[id];
     st.slots.forEach((slot, i) => {
       if (!slot) return;
@@ -288,12 +295,12 @@ export function vehicleTargets(state: GameState, layout: FactoryLayout): Map<num
   }
 
   const rw = layout.rework;
-  state.rework.queue.forEach((vid, i) => {
+  P.rework.queue.forEach((vid, i) => {
     const spot = rw.queueSpots[Math.min(i, rw.queueSpots.length - 1)];
     put(vid, spot.x + spot.w / 2, spot.y + spot.h - 12, 'complete', 1, 0.76);
   });
-  if (state.rework.slot) {
-    put(state.rework.slot.vehicleId, rw.slot.x + rw.slot.w / 2, rw.slot.y + 40, 'complete', 1, 0.95);
+  if (P.rework.slot) {
+    put(P.rework.slot.vehicleId, rw.slot.x + rw.slot.w / 2, rw.slot.y + 40, 'complete', 1, 0.95);
   }
 
   const ys = layout.yard.spots;

@@ -87,10 +87,47 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * Upgrades: capacity (+1 slot, +1 queue space) costs[capacityLevel]; reliability costs[reliabilityLevel]; warehouse costs[warehouseLevel] adds componentAdd capacity and yardAdd yard spaces. Ledger 'upgrade' (capex).
 * purchase: qty integer 1..999; cost = round(basePrice×priceMult)×qty; requires cash and warehouse space (on hand + incoming + qty ≤ capacity).
 
+## Vehicle models (milestone 2)
+
+* `BALANCE.models` defines the Sedan (unlocked at start), SUV and Pickup. Each has a class name, default name/colour, `unlockCost` (tooling, booked as capital spending via ledger category `upgrade`), `minReputation`, `timeMult` (applied on top of the trim's `timeMult`), `orderWeight`, and per-trim `baseValue`, `appeal`, `baseDemandPerDay` and `recipe`. `BALANCE.trims` now only holds the shared trim name and time multiplier.
+* `state.product.models[model]` holds the player's settings per model: `unlocked`, name, colour, finish/price/market listing per trim. Vehicles, sales orders and production jobs all carry `model`.
+* `unlockModel` fails until reputation ≥ `minReputation` and cash ≥ `unlockCost` (the starting reputation is below every requirement, so there is no day-1 trap). `scheduleBuild` rejects locked models.
+* Dealer offers pick among unlocked models weighted by `orderWeight` (no RNG draw while only one model is unlocked). Reservations and market sales match model **and** trim.
+* **Changeover:** each station remembers `lastModel`. Starting a vehicle of a different model adds `BALANCE.changeover.minutes[station]` to that slot (`slot.changeover`, included in `required`). The renderer shows `RETOOLING` and the plan flags model switches, so batching the same model pays off.
+* Saves are version 2. `deserialize` migrates version 1 saves: everything becomes the sedan, the old product settings become the sedan's, other models start locked (`tests/fixtures/save-v1.json` covers this).
+
+## Competition (milestone 3)
+
+* `BALANCE.competition.rivals`: Vantor (budget), Halberd (premium), Sunline (balanced). Each has a strategy price index, an appeal adjustment, a starting reputation and a launch day per model.
+* **Open market:** each model × trim segment has `marketSizeCompanies × baseDemandPerDay` buyers per day. They split between the player (only while the player has unreserved stock listed) and active rivals by attractiveness = appeal/70 × (0.5 + rep/100) × price factor. Missing rivals are stood in for by generic importers at parity, so at full parity the player sells what they did before rivals existed. Rival sales are tracked as expected values in `state.market.today/history`.
+* **Rival moves at midnight:** launch models on schedule; cut the price index by `priceStep` when below 0.8× a fair share, raise it above 1.25×, otherwise drift back toward their strategy price (clamped to 0.82–1.22). Each rival may start a promotion (−8 %, 2 days) in one segment. Rival reputation drifts toward 55.
+* **Dealer offers:** prices follow the average rival price index in the segment (half-weight). Offers the player leaves waiting for 2 h+ can be won by a rival (5 % per hour) → status `lost`, `lostTo`. The tutorial's first order is never contested; accepted orders can't be lost.
+* **UI:** Market tab (overall share, per-segment share and rival prices, rival profiles, daily sales, rival news). Alert "X isn't selling" when unreserved stock would take more than 3 days to clear, with a one-click price match.
+* Saves are version 3; v2 saves gain fresh rivals and uncontested existing offers.
+
+## Research (milestone 4)
+
+* `BALANCE.research.projects`: 12 projects in three branches (Process, Quality, Product), each with cost, game-minute duration, prerequisites and an effect. `state.research = { completed, active }`.
+* `startResearch` pays the cost up front (ledger/expense category `research`, part of operating expenses) and needs the prerequisites, a free lab and cash. `cancelResearch` loses progress and refunds nothing. The lab ticks once per game minute alongside production.
+* `researchEffects(state)` combines completed effects. They are applied where the numbers are computed: `cycleMinutes(…, state)`, `changeoverMinutes`, `recipeFor(…, state)` (steel saved, never below 1), equipment wear, defect chance, `detectionRate`, player appeal in `segmentShares`, and the dealer-offer chance.
+* Balance check (automated player, 20 days, 6 seeds): product research pays clearly (+19 % net worth); quality and process research are near neutral for a demand-limited player and pay back within days once the line is the bottleneck.
+* Saves are version 4; v3 saves start with nothing researched.
+
+## Multiple plants (milestone 5)
+
+* `state.plants[]` (index = plant id). Each `PlantState` has its own `stations`, `rework` bay, `allowedModels` and `constructionRemaining`. Shared company-wide: cash, the parts warehouse (`inventory`, shipments), the finished-vehicle `yard`, the production `plan`, technicians, research and the market. `Vehicle.plant` records where it is built.
+* `BALANCE.plants.sites`: Riverside (start), Eastgate ($320k, reputation 60), Harborview ($480k, reputation 75). `buildPlant` pays the site (capital spending) and starts a 2-day construction; one at a time. A plant under construction does no work. Each operating plant adds `overhead.dailyBase` per day.
+* Stamping in each plant takes the first plan job whose model is in that plant's `allowedModels` (`setPlantModel`, at least one model stays allowed). Dedicated plants avoid model changeovers.
+* Staff: operators and inspectors are hired company-wide and assigned per plant station (`assignOperator` with `plant`; Quality Inspection takes inspectors). New inspectors auto-assign to the inspection line that needs them most. Detection rate is per plant.
+* Station selectors take an optional `plant` (default 0): `stationStatus`, `staffFactor`, `queueCapacity`, `changeoverMinutes`, `breakdownRisk`, `detectionRate`, `nextUpgradeCost`… Per-station commands (`repair`, `scheduleMaintenance`, `upgradeCapacity`, `upgradeReliability`) take an optional `plant`. Alerts carry the plant in their `openStation` actions.
+* UI: a plant switcher over the factory view (status dots, construction countdown); the station panel, Staff tab and Upgrades tab follow the selected plant; the Upgrades tab lists plants and builds the next site.
+* Balance check (automated player, 25 days, 6 seeds): building the second plant around day 10 ends at +45 % net worth.
+* Saves are version 5; v4 saves become a single Riverside plant with every inspector assigned to it.
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts
-export type PanelTab = 'orders' | 'vehicles' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'research' | 'upgrades';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }
@@ -105,7 +142,7 @@ stationName(id): string
 stationStatus(state, id): StationStatus      // broken>repair>maintenance>blocked(downstream|materials|cash)>understaffed(no staff or partial)>running>idle
 stationStaff(state, id): number; stationRequiredStaff(state, id): number; staffFactor(state, id): number
 queueCapacity(state, id): number             // 0 for stamping
-cycleMinutes(id, trim, finish): number
+cycleMinutes(id, model, trim, finish): number; changeoverMinutes(state, id, model): number
 breakdownHazardPerHour(state, id): number; breakdownRisk(state, id): 'low' | 'elevated' | 'high'
 detectionRate(state): number
 unassignedOperators(state): number; freeTechnicians(state): number
@@ -114,20 +151,21 @@ stockOnHand(state): number; incomingUnits(state): number
 avgUnitCost(state, c): number; avgQuality(state, c): number   // fall back to Corvan list price / quality when empty
 dailyPayroll(state): number
 projectedDailyCosts(state): { payroll: number; overhead: number; energy: number; total: number }
-marketDemandPerDay(state, trim, price?): number
-estimateUnitCost(state, trim): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number }
+marketDemandPerDay(state, model, trim, price?): number
+estimateUnitCost(state, model, trim): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number }
   // laborOverhead = projectedDailyCosts.total / estimated daily throughput (bottleneck: 1440 / max over stations of cycle/slots), clearly an estimate
-estimatedProfitPerVehicle(state, trim, price?): number
+estimatedProfitPerVehicle(state, model, trim, price?): number
 inventoryValue(state): { raw: number; incoming: number /* paid, in transit */; wip: number; finished: number; total: number }
 receivables(state): number; outstandingOrderValue(state): number /* accepted not yet delivered + receivables */
 financeSummary(state): { revenue; cogs; grossProfit; opexTotal; operatingProfit; capex; materialsPurchased }
-actualTrimResults(state, trim): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number }
+actualTrimResults(state, model, trim): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number }
 orderProgress(state, order): { reserved: number; inProduction: number; scheduled: number; shortfall: number; ready: boolean; late: boolean; minutesLeft: number }
 ledgerReconciliation(state): { expected: number; actual: number; ok: boolean }
 nextUpgradeCost(state, kind: 'capacity' | 'reliability', station: StationId): number | null; nextWarehouseCost(state): number | null
 getAlerts(state): Alert[]       // sorted critical first; each names its cause and offers ≥1 working action
 tutorialSteps(state): TutorialStep[]
 vehiclesInStage(state, stage): Vehicle[]
+modelName(state, m); modelClassName(m); vehicleLabel(state, m, t) /* "Kestrel Premium" */; trimSpec(m, t); unlockedModels(state); unlockBlocker(state, m): string | null
 ```
 
 Alerts to cover: broken station (Repair command), service in progress (info), high breakdown risk (Schedule maintenance), missing materials (open Suppliers), no/under staff (open Staff), downstream blocked (open station), rework waiting for cash, yard full (open Orders/Vehicles), order ready (Deliver command), order late / at risk with shortfall (Schedule build command), new offers (open Orders), nothing scheduled while idle (open Orders), payroll exceeds cash (open Finances), insolvency countdown (open Finances), warehouse nearly full (open Suppliers).

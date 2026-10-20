@@ -17,6 +17,7 @@ import {
 } from '../src/sim/selectors';
 import type { Command } from '../src/sim/commandTypes';
 import type { GameState } from '../src/sim/types';
+import { competentBot, staffLine } from './helpers';
 
 function must(state: GameState, cmd: Command) {
   const r = applyCommand(state, cmd);
@@ -32,15 +33,15 @@ function checkInvariants(state: GameState) {
     where.set(id, loc);
   };
   for (const sid of STATION_IDS) {
-    const st = state.stations[sid];
+    const st = state.plants[0].stations[sid];
     st.queue.forEach((id) => put(id, `${sid}.queue`));
     st.slots.forEach((s) => s && put(s.vehicleId, `${sid}.slot`));
     for (const id of [...st.queue, ...st.slots.filter(Boolean).map((s) => s!.vehicleId)]) {
       expect(state.vehicles[id].stage).toBe(sid);
     }
   }
-  state.rework.queue.forEach((id) => put(id, 'rework.queue'));
-  if (state.rework.slot) put(state.rework.slot.vehicleId, 'rework.slot');
+  state.plants[0].rework.queue.forEach((id) => put(id, 'rework.queue'));
+  if (state.plants[0].rework.slot) put(state.plants[0].rework.slot.vehicleId, 'rework.slot');
   state.yard.forEach((id) => {
     put(id, 'yard');
     expect(state.vehicles[id].stage).toBe('finished');
@@ -76,7 +77,7 @@ describe('sim smoke', () => {
       step(s);
       if (s.time % 30 === 0) checkInvariants(s);
       // keep paint healthy so the test is about flow, not luck
-      if (s.stations.paint.broken && !s.stations.paint.service) must(s, { type: 'repair', station: 'paint' });
+      if (s.plants[0].stations.paint.broken && !s.plants[0].stations.paint.service) must(s, { type: 'repair', station: 'paint' });
     }
     expect(orderProgress(s, order).ready).toBe(true);
     expect(s.time).toBeLessThanOrEqual(order.deadline);
@@ -128,40 +129,12 @@ describe('sim smoke', () => {
   });
 });
 
-/** A diligent bot: buys parts, schedules builds for orders and market, maintains equipment. */
-function botTick(s: GameState) {
-  if (s.time % 30 !== 0) return;
-  for (const o of s.orders) {
-    if (o.status === 'offered') applyCommand(s, { type: 'acceptOrder', orderId: o.id });
-  }
-  for (const o of s.orders) {
-    if (o.status !== 'accepted') continue;
-    if (o.reserved.length >= o.quantity) applyCommand(s, { type: 'deliverOrder', orderId: o.id });
-    else if (orderProgress(s, o).shortfall > 0) applyCommand(s, { type: 'scheduleForOrder', orderId: o.id });
-  }
-  const queued = s.plan.reduce((n, j) => n + j.quantity - j.started, 0);
-  if (queued < 2 && s.yard.length < 6) applyCommand(s, { type: 'scheduleBuild', trim: 'economy', quantity: 2 });
-  for (const c of COMPONENT_IDS) {
-    const have = s.inventory[c].qty + s.shipments.filter((x) => x.component === c).reduce((n, x) => n + x.qty, 0);
-    const target = c === 'steel' ? 12 : 6;
-    if (have <= target / 3) applyCommand(s, { type: 'purchase', supplierId: 'corvan', component: c, quantity: target - have });
-  }
-  for (const id of STATION_IDS) {
-    const st = s.stations[id];
-    if (st.broken) applyCommand(s, { type: 'repair', station: id });
-    else if (st.condition < 45) applyCommand(s, { type: 'scheduleMaintenance', station: id });
-  }
-}
-
 describe('balance sanity', () => {
-  it('a diligent bot is clearly profitable over 10 days', () => {
-    const s = createInitialState();
-    must(s, { type: 'hire', role: 'operator', count: 3 });
-    must(s, { type: 'assignOperator', station: 'paint', delta: 1 });
-    must(s, { type: 'assignOperator', station: 'final', delta: 1 });
-    must(s, { type: 'assignOperator', station: 'final', delta: 1 });
+  it.each([BALANCE.start.seed, 1, 2, 3])('a diligent bot is clearly profitable over 10 days (seed %i)', (seed) => {
+    const s = createInitialState(seed);
+    staffLine(s);
     for (let i = 0; i < 10 * 1440; i++) {
-      botTick(s);
+      if (i % 30 === 0) competentBot(s);
       step(s);
       if (i % 240 === 0) checkInvariants(s);
     }
@@ -177,7 +150,7 @@ describe('balance sanity', () => {
       market: s.stats.marketSold,
       breakdowns: s.stats.breakdowns,
       rep: s.reputation,
-      est: estimateUnitCost(s, 'economy'),
+      est: estimateUnitCost(s, 'sedan', 'economy'),
       events: Object.keys(s.vehicles).length,
     });
     expect(s.gameOver).toBe(false);

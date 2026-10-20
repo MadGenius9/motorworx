@@ -1,7 +1,8 @@
 /**
- * Side-view sedan drawing that visibly changes with build progress.
- * Local coordinates: anchor (0,0) = bottom-centre (ground), car faces right, ~72 long, ~28 tall at scale 1.
+ * Side-view vehicle drawing (sedan, SUV, pickup) that visibly changes with build progress.
+ * Local coordinates: anchor (0,0) = bottom-centre (ground), vehicle faces right, ~72 long, ~28–32 tall at scale 1.
  */
+import type { ModelId } from '../config/balance';
 import type { VehicleLook } from './layout';
 import { orderColor } from './layout';
 
@@ -31,18 +32,17 @@ const WHEEL_X = 22;
 const WHEEL_Y = -6;
 const WHEEL_R = 5.6;
 
-function bodyPath(ctx: CanvasRenderingContext2D): void {
-  ctx.beginPath();
-  ctx.moveTo(-36, -6.5);
-  ctx.lineTo(-36.2, -13.5);
-  ctx.quadraticCurveTo(-35.5, -17, -30, -17.6);
-  ctx.lineTo(-20, -18.6);
-  ctx.quadraticCurveTo(-15, -27, -9, -27.6);
-  ctx.lineTo(5, -27.6);
-  ctx.quadraticCurveTo(10, -27.2, 18, -18.8);
-  ctx.lineTo(31, -16.6);
-  ctx.quadraticCurveTo(36, -15.2, 36.6, -11);
-  ctx.lineTo(36.6, -6.5);
+/** Per-model detail positions (x of door seams, seats, pillar; y of tail/head lights; roof height). */
+const GEO: Record<
+  ModelId,
+  { doors: number[]; seats: number[]; pillar: number | null; tailY: number; headY: number; roofY: number; trimLen: number }
+> = {
+  sedan: { doors: [-17, -2.5, 14.5], seats: [-12, 1], pillar: -3.4, tailY: -15.6, headY: -14.6, roofY: -27.6, trimLen: 63 },
+  suv: { doors: [-17, -2.5, 15], seats: [-25, -12, 1], pillar: -3.4, tailY: -23.5, headY: -17.2, roofY: -31.6, trimLen: 64 },
+  pickup: { doors: [-4.5, 14], seats: [1], pillar: null, tailY: -17, headY: -16.4, roofY: -31.4, trimLen: 30 },
+};
+
+function wheelArches(ctx: CanvasRenderingContext2D): void {
   ctx.lineTo(WHEEL_X + 7, -6.5);
   ctx.arc(WHEEL_X, WHEEL_Y, 7, 0, Math.PI, true);
   ctx.lineTo(-WHEEL_X + 7, -6.5);
@@ -50,12 +50,61 @@ function bodyPath(ctx: CanvasRenderingContext2D): void {
   ctx.closePath();
 }
 
-function windowPath(ctx: CanvasRenderingContext2D): void {
+function bodyPath(ctx: CanvasRenderingContext2D, model: ModelId): void {
   ctx.beginPath();
-  ctx.moveTo(-18, -19.4);
-  ctx.quadraticCurveTo(-13.5, -25.6, -8.6, -26);
-  ctx.lineTo(4.6, -26);
-  ctx.quadraticCurveTo(9, -25.4, 15.2, -19.6);
+  ctx.moveTo(-36, -6.5);
+  if (model === 'suv') {
+    // Tall boxy cabin, long roof, near-vertical tailgate.
+    ctx.lineTo(-36.4, -26);
+    ctx.quadraticCurveTo(-36, -31, -31, -31.4);
+    ctx.lineTo(4, -31.6);
+    ctx.quadraticCurveTo(9, -31.2, 16, -21.5);
+    ctx.lineTo(31, -19.5);
+    ctx.quadraticCurveTo(36.4, -18.4, 36.8, -13);
+    ctx.lineTo(36.8, -6.5);
+  } else if (model === 'pickup') {
+    // Open cargo bed at the rear, short cab, long hood.
+    ctx.lineTo(-36.4, -18.5);
+    ctx.lineTo(-6.5, -18.5);
+    ctx.lineTo(-6.5, -30);
+    ctx.quadraticCurveTo(-6, -31.4, -3.5, -31.4);
+    ctx.lineTo(6, -31.4);
+    ctx.quadraticCurveTo(9, -31, 15, -20.5);
+    ctx.lineTo(31, -18.5);
+    ctx.quadraticCurveTo(36.4, -17.4, 36.8, -12);
+    ctx.lineTo(36.8, -6.5);
+  } else {
+    ctx.lineTo(-36.2, -13.5);
+    ctx.quadraticCurveTo(-35.5, -17, -30, -17.6);
+    ctx.lineTo(-20, -18.6);
+    ctx.quadraticCurveTo(-15, -27, -9, -27.6);
+    ctx.lineTo(5, -27.6);
+    ctx.quadraticCurveTo(10, -27.2, 18, -18.8);
+    ctx.lineTo(31, -16.6);
+    ctx.quadraticCurveTo(36, -15.2, 36.6, -11);
+    ctx.lineTo(36.6, -6.5);
+  }
+  wheelArches(ctx);
+}
+
+function windowPath(ctx: CanvasRenderingContext2D, model: ModelId): void {
+  ctx.beginPath();
+  if (model === 'suv') {
+    ctx.moveTo(-33, -22.6);
+    ctx.lineTo(-33, -29.2);
+    ctx.lineTo(3.6, -29.4);
+    ctx.quadraticCurveTo(8, -29, 13.6, -22.4);
+  } else if (model === 'pickup') {
+    ctx.moveTo(-4.5, -21);
+    ctx.lineTo(-4.5, -29.2);
+    ctx.lineTo(5.4, -29.2);
+    ctx.quadraticCurveTo(8.6, -28.8, 13.2, -21);
+  } else {
+    ctx.moveTo(-18, -19.4);
+    ctx.quadraticCurveTo(-13.5, -25.6, -8.6, -26);
+    ctx.lineTo(4.6, -26);
+    ctx.quadraticCurveTo(9, -25.4, 15.2, -19.6);
+  }
   ctx.closePath();
 }
 
@@ -68,7 +117,7 @@ function drawSkid(ctx: CanvasRenderingContext2D, w = 60): void {
   ctx.fillRect(w / 2 - 7, -1.5, 5, 1.5);
 }
 
-function drawPanels(ctx: CanvasRenderingContext2D, p: number): void {
+function drawPanels(ctx: CanvasRenderingContext2D, p: number, model: ModelId): void {
   drawSkid(ctx, 62);
   const count = 1 + Math.floor(Math.min(1, p) * 5.999);
   for (let i = 0; i < count; i++) {
@@ -85,7 +134,7 @@ function drawPanels(ctx: CanvasRenderingContext2D, p: number): void {
     ctx.save();
     ctx.translate(0, top + 1);
     ctx.scale(0.62, 0.3);
-    bodyPath(ctx);
+    bodyPath(ctx, model);
     ctx.fillStyle = 'rgba(181,189,197,' + (0.4 + 0.6 * Math.min(1, (p - 0.5) * 2)).toFixed(2) + ')';
     ctx.fill();
     ctx.restore();
@@ -93,7 +142,7 @@ function drawPanels(ctx: CanvasRenderingContext2D, p: number): void {
 }
 
 /** Bare body-in-white shell; `form` 0..1 controls how much is welded together. */
-function drawShell(ctx: CanvasRenderingContext2D, form: number): void {
+function drawShell(ctx: CanvasRenderingContext2D, form: number, model: ModelId): void {
   drawSkid(ctx, 64);
   ctx.save();
   ctx.translate(0, -3);
@@ -101,7 +150,7 @@ function drawShell(ctx: CanvasRenderingContext2D, form: number): void {
   ctx.fillStyle = '#6f777f';
   ctx.fillRect(-34, -7, 68, 3);
   // Body side panels fill in.
-  bodyPath(ctx);
+  bodyPath(ctx, model);
   ctx.fillStyle = `rgba(154,162,170,${(0.15 + 0.75 * form).toFixed(2)})`;
   ctx.fill();
   // Outline drawn progressively.
@@ -112,7 +161,7 @@ function drawShell(ctx: CanvasRenderingContext2D, form: number): void {
   ctx.setLineDash([]);
   // Openings (no glass yet).
   if (form > 0.55) {
-    windowPath(ctx);
+    windowPath(ctx, model);
     ctx.fillStyle = '#2a2e33';
     ctx.fill();
   }
@@ -122,7 +171,7 @@ function drawShell(ctx: CanvasRenderingContext2D, form: number): void {
   const members: [number, number, number, number, number][] = [
     [-30, -8, -30, -16.5, 0.15],
     [30, -8, 30, -15.5, 0.25],
-    [-3, -7, -3, -26, 0.45],
+    [-3, -7, -3, GEO[model].roofY + 1.6, 0.45],
     [-17, -7, -17, -19, 0.6],
     [16, -7, 16, -19, 0.7],
     [-34, -11, 34, -11, 0.85],
@@ -173,21 +222,22 @@ function drawWheel(ctx: CanvasRenderingContext2D, x: number, premium: boolean): 
 function drawPaintedBody(ctx: CanvasRenderingContext2D, look: VehicleLook, paintFrac: number, lift: number): void {
   ctx.save();
   ctx.translate(0, -lift);
+  const m = look.model;
   // Primer base.
-  bodyPath(ctx);
+  bodyPath(ctx, m);
   ctx.fillStyle = BIW;
   ctx.fill();
   if (paintFrac > 0) {
     ctx.save();
-    bodyPath(ctx);
+    bodyPath(ctx, m);
     ctx.clip();
     const edge = -37 + 74 * paintFrac;
-    const grad = ctx.createLinearGradient(0, -28, 0, -6);
+    const grad = ctx.createLinearGradient(0, GEO[m].roofY, 0, -6);
     grad.addColorStop(0, shade(look.color, 0.18));
     grad.addColorStop(0.55, look.color);
     grad.addColorStop(1, shade(look.color, -0.35));
     ctx.fillStyle = grad;
-    ctx.fillRect(-37, -30, edge + 37, 26);
+    ctx.fillRect(-37, -34, edge + 37, 30);
     if (look.finish === 'metallic' && paintFrac > 0.2) {
       // Subtle sheen band.
       const sheen = ctx.createLinearGradient(-30, -28, 30, -8);
@@ -196,11 +246,11 @@ function drawPaintedBody(ctx: CanvasRenderingContext2D, look: VehicleLook, paint
       sheen.addColorStop(0.55, 'rgba(255,255,255,0.05)');
       sheen.addColorStop(1, 'rgba(255,255,255,0)');
       ctx.fillStyle = sheen;
-      ctx.fillRect(-37, -30, edge + 37, 26);
+      ctx.fillRect(-37, -34, edge + 37, 30);
     }
     ctx.restore();
   }
-  bodyPath(ctx);
+  bodyPath(ctx, m);
   ctx.strokeStyle = 'rgba(0,0,0,0.55)';
   ctx.lineWidth = 0.9;
   ctx.stroke();
@@ -209,6 +259,8 @@ function drawPaintedBody(ctx: CanvasRenderingContext2D, look: VehicleLook, paint
 
 function drawComplete(ctx: CanvasRenderingContext2D, look: VehicleLook, assembly: number): void {
   const premium = look.trim === 'premium';
+  const m = look.model;
+  const geo = GEO[m];
   const wheelsRear = assembly >= 0.5;
   const wheelsFront = assembly >= 0.62;
   if (!wheelsRear || !wheelsFront) drawSkid(ctx, 64);
@@ -219,16 +271,20 @@ function drawComplete(ctx: CanvasRenderingContext2D, look: VehicleLook, assembly
   ctx.save();
   ctx.translate(0, -lift);
   // Windows: dark openings first, glass later, interior seat silhouettes in between.
-  windowPath(ctx);
+  windowPath(ctx, m);
   ctx.fillStyle = '#23272b';
   ctx.fill();
   if (assembly >= 0.15) {
+    // Seat silhouettes, clipped to the window opening so they never sit on the paint.
+    ctx.save();
+    windowPath(ctx, m);
+    ctx.clip();
     ctx.fillStyle = premium ? '#7a5a3c' : '#3c4248';
-    ctx.fillRect(-12, -22, 3, 4);
-    ctx.fillRect(1, -22, 3, 4);
+    for (const sx of geo.seats) ctx.fillRect(sx, m === 'sedan' ? -22 : -25, 3, 4);
+    ctx.restore();
   }
   if (assembly >= 0.32) {
-    windowPath(ctx);
+    windowPath(ctx, m);
     const g = ctx.createLinearGradient(-15, -26, 12, -19);
     g.addColorStop(0, shade(GLASS, 0.25));
     g.addColorStop(1, GLASS);
@@ -236,27 +292,37 @@ function drawComplete(ctx: CanvasRenderingContext2D, look: VehicleLook, assembly
     ctx.globalAlpha = 0.85;
     ctx.fill();
     ctx.globalAlpha = 1;
-    // B-pillar
-    ctx.fillStyle = shade(look.color, -0.45);
-    ctx.fillRect(-3.4, -26, 1.8, 6.8);
+    if (geo.pillar !== null) {
+      // B-pillar
+      ctx.fillStyle = shade(look.color, -0.45);
+      const top = m === 'sedan' ? -26 : -29.4;
+      ctx.fillRect(geo.pillar, top, 1.8, m === 'sedan' ? 6.8 : 7.2);
+    }
   }
-  // Door lines.
+  // Door seams (and the cab/bed gap on the pickup).
   ctx.strokeStyle = 'rgba(0,0,0,0.35)';
   ctx.lineWidth = 0.6;
   ctx.beginPath();
-  ctx.moveTo(-2.5, -19);
-  ctx.lineTo(-2.5, -8);
-  ctx.moveTo(-17, -18.5);
-  ctx.lineTo(-16, -8);
-  ctx.moveTo(14.5, -18.5);
-  ctx.lineTo(13.5, -8);
+  for (const dx of geo.doors) {
+    ctx.moveTo(dx, -19);
+    ctx.lineTo(dx - 0.6, -8);
+  }
+  if (m === 'pickup') {
+    ctx.moveTo(-8, -18.2);
+    ctx.lineTo(-8, -8);
+  }
   ctx.stroke();
+  if (m === 'pickup') {
+    // Bed rail highlight.
+    ctx.fillStyle = shade(look.color, -0.3);
+    ctx.fillRect(-36, -18.6, 28, 1.4);
+  }
   if (assembly >= 0.82) {
     // Lights.
     ctx.fillStyle = '#fff3c4';
-    ctx.fillRect(33.4, -14.6, 3, 2.4);
+    ctx.fillRect(33.4, geo.headY, 3, 2.4);
     ctx.fillStyle = '#e5484d';
-    ctx.fillRect(-36.2, -15.6, 2.4, 2.6);
+    ctx.fillRect(-36.2, geo.tailY, 2.4, m === 'suv' ? 4 : 2.6);
   }
   if (assembly >= 0.94) {
     // Handles + bumpers.
@@ -272,8 +338,8 @@ function drawComplete(ctx: CanvasRenderingContext2D, look: VehicleLook, assembly
       cg.addColorStop(0, '#ffffff');
       cg.addColorStop(1, '#9aa3ab');
       ctx.fillStyle = cg;
-      ctx.fillRect(-33, -12.8, 63, 1.3);
-      windowPath(ctx);
+      ctx.fillRect(m === 'pickup' ? -4 : -33, -12.8, geo.trimLen, 1.3);
+      windowPath(ctx, m);
       ctx.strokeStyle = '#dfe4e8';
       ctx.lineWidth = 0.7;
       ctx.stroke();
@@ -364,17 +430,17 @@ export function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number,
   const p = Math.max(0, Math.min(1, look.progress));
   switch (look.phase) {
     case 'stamping':
-      drawPanels(ctx, p);
+      drawPanels(ctx, p, look.model);
       break;
     case 'body':
-      drawShell(ctx, p);
+      drawShell(ctx, p, look.model);
       break;
     case 'paint':
       drawSkid(ctx, 64);
       drawPaintedBody(ctx, look, p, 3);
       ctx.save();
       ctx.translate(0, -3);
-      windowPath(ctx);
+      windowPath(ctx, look.model);
       ctx.fillStyle = '#23272b';
       ctx.fill();
       ctx.restore();
@@ -389,11 +455,11 @@ export function drawVehicle(ctx: CanvasRenderingContext2D, x: number, y: number,
 
   let tagX = -10;
   if (look.reworkTag) {
-    drawTag(ctx, tagX, -30, '#e5484d', '', true);
+    drawTag(ctx, tagX, -34, '#e5484d', '', true);
     tagX += 16;
   }
   if (look.orderTag != null) {
-    drawTag(ctx, tagX + 4, -30, orderColor(look.orderTag), `#${look.orderTag}`, false);
+    drawTag(ctx, tagX + 4, -34, orderColor(look.orderTag), `#${look.orderTag}`, false);
   }
   ctx.restore();
 }

@@ -1286,3 +1286,129 @@ li.current .tut-check {
     opacity: 0;
   }
 }
+
+/* Vehicle model switcher (Vehicles tab) */
+.model-switch {
+  display: flex;
+  margin-bottom: 10px;
+}
+.model-switch button {
+  flex: 1;
+}
+.model-switch button .small {
+  opacity: 0.75;
+  font-weight: 400;
+}
+
+/* Seven sidebar tabs: wrap into a 4 + 3 grid so labels and badges stay readable. */
+.tabs {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+}
+
+/* Market tab */
+.share-bar {
+  display: flex;
+  height: 12px;
+  border-radius: 3px;
+  overflow: hidden;
+  background: var(--panel-3);
+  margin: 4px 0 6px;
+}
+.share-bar span {
+  display: block;
+  height: 100%;
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.segment {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.segment:last-child {
+  border-bottom: none;
+}
+.segment-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.segment-head .num {
+  margin-left: auto;
+}
+.table.compact td {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* R&D tab */
+.effect-list {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+.research-card.research-locked {
+  opacity: 0.6;
+}
+.research-card.research-done {
+  border-color: rgba(63, 185, 80, 0.45);
+}
+.research-card.research-active {
+  border-color: var(--blue);
+}
+
+/* Plant switcher (over the factory view) */
+.plant-switcher {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  display: flex;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+.plant-switcher button {
+  font: inherit;
+  font-size: 13px;
+  background: transparent;
+  color: var(--muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 6px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.plant-switcher button:last-child {
+  border-right: none;
+}
+.plant-switcher button.active {
+  background: var(--accent);
+  color: #1b1d20;
+  font-weight: 700;
+}
+.dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.dot-ok {
+  background: var(--green);
+}
+.dot-warn {
+  background: var(--amber);
+}
+.dot-bad {
+  background: var(--red);
+}
+.dot-build {
+  background: var(--blue);
+}
