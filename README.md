@@ -43,7 +43,7 @@ The **R&D** tab runs one research project at a time: faster stations, fewer defe
 
 When reputation and cash allow, build a second (and third) plant from **Upgrades**. Each plant has its own line, staff and upgrades, and shares cash, parts, the yard and the production plan. Switch plants with the tabs above the factory, and dedicate a plant to one model (Stamping panel) to avoid retooling.
 
-Controls: drag to pan, mouse wheel to zoom, click a station for details and actions. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
+The factory is shown in **3D** (three.js/WebGL): drag to pan, right-drag (or Shift+drag) to rotate, mouse wheel to zoom toward the cursor, click a station for details and actions. The **2D** button switches to the flat plan view; browsers without WebGL get the 2D view automatically. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout
 
@@ -52,7 +52,8 @@ Controls: drag to pan, mouse wheel to zoom, click a station for details and acti
 | `src/config/balance.ts` | All tunable values: prices, recipes, suppliers, stations, wages, probabilities, upgrades |
 | `src/sim/` | Deterministic fixed-step simulation (1 tick = 1 game minute), commands, selectors, save/load. No DOM. |
 | `src/game/GameController.ts` | Game loop, pause/speed, autosave, manual save/load |
-| `src/render/` | Canvas factory renderer (camera, layout, vehicle drawing) |
+| `src/render/` | Floor-plan layout, the 2D canvas renderer (fallback / plan view) and `FactoryCanvas`, which picks 3D or 2D |
+| `src/render3d/` | three.js renderer: hall, stations and machines, extruded per-model cars, warehouse, dock, boards, labels |
 | `src/ui/`, `src/App.tsx` | React panels: top bar, alerts, station drawer, tabs, tutorial |
 | `tests/` | Validation tests (full order loop, materials, breakdowns, rework, payments, inventory, save/load, speed, ledger) |
 | `docs/DESIGN.md` | Game rules and module contracts |

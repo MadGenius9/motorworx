@@ -124,6 +124,14 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * Balance check (automated player, 25 days, 6 seeds): building the second plant around day 10 ends at +45 % net worth.
 * Saves are version 5; v4 saves become a single Riverside plant with every inspector assigned to it.
 
+## 3D factory view
+
+* `src/render3d/Factory3DRenderer.ts` (three.js) is the default view; `src/render/FactoryRenderer.ts` (Canvas 2D) stays as the plan view and the automatic fallback when WebGL is unavailable. `FactoryCanvas` picks the mode (remembered in localStorage under `motorworx-view-mode`) and gives each mode a fresh canvas.
+* Both views use the same `computeLayout(state, plant)` / `vehicleTargets()`: 2D x → world x, 2D y → world z, y up. The 3D scene is rebuilt only when the layout's signature changes (plant, slots, queue capacity, yard size); everything else updates per frame.
+* Cars (`src/render3d/cars.ts`) are extruded from each model's side profile (shared geometry per model) with a per-car paint material, so a build stage just toggles parts and lerps the colour.
+* Labels are canvas-texture sprites rescaled with camera distance so text stays readable; boards (production plan, company sign) are canvas textures redrawn only when their content changes. Machines animate on sim time, so pause freezes them.
+* three.js is split into its own chunk (`vite.config.ts`).
+
 ## Selectors (`src/sim/selectors.ts`) — read-only helpers used by UI and renderer
 
 ```ts
