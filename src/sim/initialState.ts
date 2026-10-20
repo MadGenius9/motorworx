@@ -1,0 +1,162 @@
+import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
+import { normaliseSeed } from './rng';
+import type {
+  ComponentId,
+  ComponentStock,
+  ExpenseCategory,
+  GameState,
+  SalesOrder,
+  StationId,
+  StationState,
+} from './types';
+import { SAVE_VERSION } from './types';
+
+const EXPENSES: ExpenseCategory[] = [
+  'payroll',
+  'utilities',
+  'maintenance',
+  'repair',
+  'rework',
+  'warranty',
+  'hiring',
+  'severance',
+  'penalty',
+];
+
+function makeStation(id: StationId): StationState {
+  return {
+    id,
+    slots: [null],
+    queue: [],
+    capacityLevel: 0,
+    reliabilityLevel: 0,
+    condition: BALANCE.start.stationCondition[id],
+    broken: false,
+    service: null,
+    assigned: id === 'inspection' ? 0 : BALANCE.start.assignments[id],
+    issues: [],
+    energyAccrued: 0,
+    completedTotal: 0,
+    activeMinutesTotal: 0,
+  };
+}
+
+/** Fresh game state built entirely from BALANCE.start. */
+export function createInitialState(seed: number = BALANCE.start.seed): GameState {
+  const S = BALANCE.start;
+  const time = BALANCE.time.startMinute;
+  let nextId = 1;
+
+  const inventory = {} as Record<ComponentId, ComponentStock>;
+  for (const c of COMPONENT_IDS) {
+    const s = S.inventory[c];
+    inventory[c] = { qty: s.qty, value: s.qty * s.unitCost, qualitySum: s.qty * s.quality };
+  }
+
+  const stations = {} as Record<StationId, StationState>;
+  for (const id of STATION_IDS) stations[id] = makeStation(id);
+
+  const fo = S.firstOrder;
+  const terms = BALANCE.orders.paymentTerms[fo.paymentTermIndex] ?? BALANCE.orders.paymentTerms[0];
+  const firstOrder: SalesOrder = {
+    id: nextId++,
+    dealer: fo.dealer,
+    trim: fo.trim,
+    quantity: fo.quantity,
+    unitPrice: fo.unitPrice,
+    createdAt: time,
+    offerExpiresAt: time + fo.offerLifetimeMinutes,
+    deadline: time + fo.deadlineInMinutes,
+    paymentTermsLabel: terms.label,
+    paymentTermsMinutes: terms.minutes,
+    latePenaltyPerDay: BALANCE.orders.latePenaltyPerDay,
+    latePenaltyMax: BALANCE.orders.latePenaltyMax,
+    cancelAfterLateMinutes: BALANCE.orders.cancelAfterLateMinutes,
+    cancelFee: Math.round(fo.quantity * fo.unitPrice * BALANCE.orders.cancelFeePct),
+    status: 'offered',
+    priority: 0,
+    reserved: [],
+    acceptedAt: null,
+    deliveredAt: null,
+    paymentDueAt: null,
+    invoiceAmount: null,
+    paidAt: null,
+    lateDays: 0,
+    lateWarned: false,
+  };
+
+  const opex = {} as Record<ExpenseCategory, number>;
+  for (const e of EXPENSES) opex[e] = 0;
+
+  const day = Math.floor(time / BALANCE.time.minutesPerDay) + 1;
+
+  const state: GameState = {
+    version: SAVE_VERSION,
+    time,
+    rng: normaliseSeed(seed),
+    nextId,
+    cash: S.cash,
+    reputation: S.reputation,
+    product: {
+      name: S.productName,
+      colorId: S.colorId,
+      finish: { ...S.defaultFinish },
+      price: { ...S.defaultPrices },
+      marketListed: { economy: true, premium: true },
+    },
+    inventory,
+    shipments: [],
+    warehouseLevel: 0,
+    stations,
+    rework: { queue: [], slot: null, issues: [] },
+    vehicles: {},
+    yard: [],
+    orders: [firstOrder],
+    plan: [],
+    staff: { ...S.staff },
+    finance: {
+      startingCash: S.cash,
+      revenue: 0,
+      cogs: 0,
+      opex,
+      capex: 0,
+      materialsPurchased: 0,
+      ledger: [],
+      ledgerCarriedForward: 0,
+      today: { day, revenue: 0, cogs: 0, expenses: 0, cashEnd: S.cash, built: 0 },
+      history: [],
+    },
+    stats: {
+      vehiclesStarted: 0,
+      vehiclesBuilt: 0,
+      ordersAccepted: 0,
+      ordersDelivered: 0,
+      ordersPaid: 0,
+      ordersLate: 0,
+      ordersCancelled: 0,
+      marketSold: 0,
+      purchases: 0,
+      defectsCaught: 0,
+      defectsEscaped: 0,
+      reworksDone: 0,
+      breakdowns: 0,
+      builtToday: 0,
+    },
+    events: [],
+    tutorial: { dismissed: false },
+    insolventSince: null,
+    gameOver: false,
+    gameOverReason: null,
+  };
+
+  state.events.push({
+    id: state.nextId++,
+    time,
+    kind: 'info',
+    text: `Welcome to MotorWorx! You've taken over a small ${S.productName} plant with $${S.cash.toLocaleString(
+      'en-US',
+    )} in the bank. ${fo.dealer} wants ${fo.quantity} ${BALANCE.trims[fo.trim].name} cars — check the Orders tab.`,
+  });
+
+  return state;
+}

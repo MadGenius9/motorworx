@@ -1,0 +1,863 @@
+/**
+ * Read-only helpers used by the UI and renderer. All functions are pure (never mutate state).
+ */
+import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
+import type { Command } from './commandTypes';
+import type {
+  ComponentId,
+  FinishId,
+  GameState,
+  SalesOrder,
+  StationId,
+  TrimId,
+  Vehicle,
+  VehicleStage,
+} from './types';
+
+export type PanelTab = 'orders' | 'vehicles' | 'suppliers' | 'staff' | 'finances' | 'upgrades';
+export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
+export type AlertAction =
+  | { kind: 'openTab'; tab: PanelTab }
+  | { kind: 'openStation'; station: StationId }
+  | { kind: 'command'; command: Command };
+export interface Alert {
+  id: string;
+  severity: 'critical' | 'warning' | 'info';
+  title: string;
+  cause: string;
+  actions: { label: string; action: AlertAction }[];
+}
+export interface TutorialStep {
+  id: string;
+  title: string;
+  text: string;
+  done: boolean;
+  action?: { label: string; action: AlertAction };
+}
+
+const MPD = BALANCE.time.minutesPerDay;
+
+// ───────────────────────────── time & formatting ─────────────────────────────
+
+export function dayOf(time: number): number {
+  return Math.floor(time / MPD) + 1;
+}
+
+export function clockOf(time: number): string {
+  const m = ((Math.floor(time) % MPD) + MPD) % MPD;
+  const h = Math.floor(m / 60);
+  const mm = m % 60;
+  return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
+}
+
+export function formatTime(time: number): string {
+  return `Day ${dayOf(time)} · ${clockOf(time)}`;
+}
+
+export function formatDuration(minutes: number): string {
+  const m = Math.max(0, Math.round(minutes));
+  if (m < 60) return `${m}m`;
+  if (m < MPD) {
+    const h = Math.floor(m / 60);
+    const r = m % 60;
+    return r ? `${h}h ${r}m` : `${h}h`;
+  }
+  const d = Math.floor(m / MPD);
+  const h = Math.floor((m % MPD) / 60);
+  return h ? `${d}d ${h}h` : `${d}d`;
+}
+
+function groupThousands(n: number): string {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+}
+
+export function formatMoney(n: number): string {
+  const r = Math.round(n);
+  const s = groupThousands(Math.abs(r));
+  return r < 0 ? `−$${s}` : `$${s}`;
+}
+
+export function stationName(id: StationId): string {
+  return BALANCE.stations[id].name;
+}
+
+export function componentName(c: ComponentId): string {
+  return BALANCE.components[c].name;
+}
+
+export function trimName(t: TrimId): string {
+  return BALANCE.trims[t].name;
+}
+
+// ───────────────────────────── stations ─────────────────────────────
+
+export function stationStaff(state: GameState, id: StationId): number {
+  return id === 'inspection' ? state.staff.inspector : state.stations[id].assigned;
+}
+
+export function stationRequiredStaff(state: GameState, id: StationId): number {
+  return BALANCE.stations[id].staffPerSlot * state.stations[id].slots.length;
+}
+
+export function staffFactor(state: GameState, id: StationId): number {
+  const req = stationRequiredStaff(state, id);
+  if (req <= 0) return 0;
+  return Math.max(0, Math.min(1, stationStaff(state, id) / req));
+}
+
+/** True if the station has any vehicle in a slot or queue (or, for stamping, scheduled work). */
+export function stationHasWork(state: GameState, id: StationId): boolean {
+  const st = state.stations[id];
+  if (st.slots.some((s) => s !== null) || st.queue.length > 0) return true;
+  if (id === 'stamping') return state.plan.some((j) => j.started < j.quantity);
+  return false;
+}
+
+export function stationStatus(state: GameState, id: StationId): StationStatus {
+  const st = state.stations[id];
+  if (st.service) return st.service.kind === 'repair' ? 'repair' : 'maintenance';
+  if (st.broken) return 'broken';
+  if (st.issues.some((i) => i.kind === 'downstream' || i.kind === 'materials' || i.kind === 'cash')) return 'blocked';
+  const sf = staffFactor(state, id);
+  if (sf < 1 && (sf === 0 || st.issues.some((i) => i.kind === 'staff') || stationHasWork(state, id))) {
+    return 'understaffed';
+  }
+  if (st.slots.some((s) => s !== null && !s.done)) return 'running';
+  return 'idle';
+}
+
+export function queueCapacity(state: GameState, id: StationId): number {
+  if (id === 'stamping') return 0;
+  return BALANCE.queue.baseCapacity + BALANCE.queue.perCapacityLevel * state.stations[id].capacityLevel;
+}
+
+export function cycleMinutes(id: StationId, trim: TrimId, finish: FinishId): number {
+  const base = Math.round(BALANCE.stations[id].baseMinutes * BALANCE.trims[trim].timeMult);
+  return base + (id === 'paint' ? BALANCE.finishes[finish].paintMinutesAdd : 0);
+}
+
+/** Components consumed by `station` for one vehicle (paint station quantities × finish.paintMult). */
+export function recipeFor(trim: TrimId, station: StationId, finish: FinishId): Partial<Record<ComponentId, number>> {
+  const r = BALANCE.trims[trim].recipe[station];
+  const out: Partial<Record<ComponentId, number>> = {};
+  if (!r) return out;
+  const mult = station === 'paint' ? BALANCE.finishes[finish].paintMult : 1;
+  for (const c of COMPONENT_IDS) {
+    const q = r[c];
+    if (q && q > 0) out[c] = q * mult;
+  }
+  return out;
+}
+
+/** Breakdown probability per active minute at the station's current condition. */
+export function hazardPerActiveMinute(state: GameState, id: StationId): number {
+  const st = state.stations[id];
+  const E = BALANCE.equipment;
+  if (st.condition <= 0) return 1;
+  if (st.condition >= E.hazardThreshold) return 0;
+  const x = (E.hazardThreshold - st.condition) / E.hazardThreshold;
+  return E.hazardScale * x * x * Math.pow(E.reliabilityHazardMult, st.reliabilityLevel);
+}
+
+export function breakdownHazardPerHour(state: GameState, id: StationId): number {
+  const p = hazardPerActiveMinute(state, id);
+  if (p >= 1) return 1;
+  return 1 - Math.pow(1 - p, 60);
+}
+
+export function breakdownRisk(state: GameState, id: StationId): 'low' | 'elevated' | 'high' {
+  const c = state.stations[id].condition;
+  if (c < BALANCE.equipment.dangerCondition) return 'high';
+  if (c < BALANCE.equipment.warnCondition) return 'elevated';
+  return 'low';
+}
+
+/** Probability that inspection catches a defect (0 when there are no inspectors). */
+export function detectionRate(state: GameState): number {
+  const n = state.staff.inspector;
+  if (n <= 0) return 0;
+  const Q = BALANCE.quality;
+  return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1));
+}
+
+// ───────────────────────────── staff ─────────────────────────────
+
+export function assignedOperators(state: GameState): number {
+  let n = 0;
+  for (const id of STATION_IDS) if (id !== 'inspection') n += state.stations[id].assigned;
+  return n;
+}
+
+export function unassignedOperators(state: GameState): number {
+  return Math.max(0, state.staff.operator - assignedOperators(state));
+}
+
+export function busyTechnicians(state: GameState): number {
+  return STATION_IDS.filter((id) => state.stations[id].service !== null).length;
+}
+
+export function freeTechnicians(state: GameState): number {
+  return Math.max(0, state.staff.technician - busyTechnicians(state));
+}
+
+// ───────────────────────────── warehouse ─────────────────────────────
+
+export function warehouseCapacity(state: GameState): number {
+  return BALANCE.start.warehouseCapacity + state.warehouseLevel * BALANCE.upgrades.warehouse.componentAdd;
+}
+
+export function yardCapacity(state: GameState): number {
+  return BALANCE.start.yardCapacity + state.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
+}
+
+export function stockOnHand(state: GameState): number {
+  let n = 0;
+  for (const c of COMPONENT_IDS) n += state.inventory[c].qty;
+  return n;
+}
+
+export function incomingUnits(state: GameState): number {
+  let n = 0;
+  for (const s of state.shipments) n += s.qty;
+  return n;
+}
+
+export function incomingOf(state: GameState, c: ComponentId): number {
+  let n = 0;
+  for (const s of state.shipments) if (s.component === c) n += s.qty;
+  return n;
+}
+
+function referenceSupplier() {
+  return BALANCE.suppliers.find((s) => s.id === 'corvan') ?? BALANCE.suppliers[0];
+}
+
+export function supplierUnitPrice(supplierId: string, c: ComponentId): number | null {
+  const sup = BALANCE.suppliers.find((s) => s.id === supplierId);
+  if (!sup) return null;
+  return Math.round(BALANCE.components[c].basePrice * sup.priceMult);
+}
+
+export function avgUnitCost(state: GameState, c: ComponentId): number {
+  const s = state.inventory[c];
+  if (s.qty > 0) return s.value / s.qty;
+  return Math.round(BALANCE.components[c].basePrice * referenceSupplier().priceMult);
+}
+
+export function avgQuality(state: GameState, c: ComponentId): number {
+  const s = state.inventory[c];
+  if (s.qty > 0) return s.qualitySum / s.qty;
+  return referenceSupplier().quality;
+}
+
+// ───────────────────────────── costs & economics ─────────────────────────────
+
+export function dailyPayroll(state: GameState): number {
+  const S = BALANCE.staff;
+  return (
+    state.staff.operator * S.operator.dailyWage +
+    state.staff.inspector * S.inspector.dailyWage +
+    state.staff.technician * S.technician.dailyWage
+  );
+}
+
+/** Energy accrued so far today plus the current active slots running until midnight. */
+export function projectedDailyCosts(state: GameState): { payroll: number; overhead: number; energy: number; total: number } {
+  const payroll = dailyPayroll(state);
+  const overhead = BALANCE.overhead.dailyBase;
+  const minutesLeft = MPD - (((state.time % MPD) + MPD) % MPD);
+  let energy = 0;
+  for (const id of STATION_IDS) {
+    const st = state.stations[id];
+    energy += st.energyAccrued;
+    if (st.broken || st.service) continue;
+    const sf = staffFactor(state, id);
+    if (sf <= 0) continue;
+    const active = st.slots.filter((s) => s !== null && !s.done).length;
+    energy += (active * BALANCE.stations[id].energyPerActiveHour * minutesLeft) / 60;
+  }
+  energy = Math.round(energy);
+  return { payroll, overhead, energy, total: payroll + overhead + energy };
+}
+
+function demandPerDay(state: GameState, trim: TrimId, price: number, finish: FinishId): number {
+  const M = BALANCE.market;
+  const t = BALANCE.trims[trim];
+  const f = BALANCE.finishes[finish];
+  const ref = t.baseValue + f.valueAdd;
+  const priceFactor = Math.min(M.maxPriceFactor, Math.exp(-M.elasticity * (price / ref - 1)));
+  return t.baseDemandPerDay * ((t.appeal + f.appealAdd) / M.appealReference) * (M.repBase + state.reputation / 100) * priceFactor;
+}
+
+/** Internal variant used by the engine for a specific vehicle finish. */
+export function marketDemandForFinish(state: GameState, trim: TrimId, price: number, finish: FinishId): number {
+  return demandPerDay(state, trim, price, finish);
+}
+
+export function marketDemandPerDay(state: GameState, trim: TrimId, price?: number): number {
+  return demandPerDay(state, trim, price ?? state.product.price[trim], state.product.finish[trim]);
+}
+
+/** Estimated vehicles per day at the bottleneck station (ignores staffing and materials). */
+export function estimatedDailyThroughput(state: GameState, trim: TrimId): number {
+  const finish = state.product.finish[trim];
+  let worst = 0;
+  for (const id of STATION_IDS) {
+    const per = cycleMinutes(id, trim, finish) / state.stations[id].slots.length;
+    if (per > worst) worst = per;
+  }
+  return worst > 0 ? MPD / worst : 0;
+}
+
+export function estimateUnitCost(
+  state: GameState,
+  trim: TrimId,
+): { materials: number; byComponent: Partial<Record<ComponentId, number>>; laborOverhead: number; total: number } {
+  const finish = state.product.finish[trim];
+  const qty: Partial<Record<ComponentId, number>> = {};
+  for (const id of STATION_IDS) {
+    const r = recipeFor(trim, id, finish);
+    for (const c of COMPONENT_IDS) {
+      const q = r[c];
+      if (q) qty[c] = (qty[c] ?? 0) + q;
+    }
+  }
+  const byComponent: Partial<Record<ComponentId, number>> = {};
+  let materials = 0;
+  for (const c of COMPONENT_IDS) {
+    const q = qty[c];
+    if (!q) continue;
+    const v = Math.round(q * avgUnitCost(state, c));
+    byComponent[c] = v;
+    materials += v;
+  }
+  const throughput = estimatedDailyThroughput(state, trim);
+  const laborOverhead = throughput > 0 ? Math.round(projectedDailyCosts(state).total / throughput) : 0;
+  return { materials, byComponent, laborOverhead, total: materials + laborOverhead };
+}
+
+export function estimatedProfitPerVehicle(state: GameState, trim: TrimId, price?: number): number {
+  const p = price ?? state.product.price[trim];
+  return Math.round(p - estimateUnitCost(state, trim).total);
+}
+
+const PRODUCTION_STAGES: ReadonlySet<VehicleStage> = new Set<VehicleStage>([...STATION_IDS, 'rework']);
+
+export function isInProduction(v: Vehicle): boolean {
+  return PRODUCTION_STAGES.has(v.stage);
+}
+
+export function inventoryValue(state: GameState): {
+  raw: number;
+  incoming: number;
+  wip: number;
+  finished: number;
+  total: number;
+} {
+  let raw = 0;
+  for (const c of COMPONENT_IDS) raw += state.inventory[c].value;
+  let incoming = 0;
+  for (const s of state.shipments) incoming += s.qty * s.unitCost;
+  let wip = 0;
+  let finished = 0;
+  for (const v of Object.values(state.vehicles)) {
+    if (isInProduction(v)) wip += v.cost;
+    else if (v.stage === 'finished') finished += v.cost;
+  }
+  raw = Math.round(raw);
+  wip = Math.round(wip);
+  finished = Math.round(finished);
+  return { raw, incoming, wip, finished, total: raw + incoming + wip + finished };
+}
+
+export function receivables(state: GameState): number {
+  let n = 0;
+  for (const o of state.orders) if (o.status === 'delivered') n += o.invoiceAmount ?? 0;
+  return n;
+}
+
+export function outstandingOrderValue(state: GameState): number {
+  let n = 0;
+  for (const o of state.orders) if (o.status === 'accepted') n += o.quantity * o.unitPrice;
+  return n + receivables(state);
+}
+
+export function financeSummary(state: GameState): {
+  revenue: number;
+  cogs: number;
+  grossProfit: number;
+  opexTotal: number;
+  operatingProfit: number;
+  capex: number;
+  materialsPurchased: number;
+} {
+  const f = state.finance;
+  let opexTotal = 0;
+  for (const k of Object.keys(f.opex) as (keyof typeof f.opex)[]) opexTotal += f.opex[k];
+  const grossProfit = f.revenue - f.cogs;
+  return {
+    revenue: f.revenue,
+    cogs: f.cogs,
+    grossProfit,
+    opexTotal,
+    operatingProfit: grossProfit - opexTotal,
+    capex: f.capex,
+    materialsPurchased: f.materialsPurchased,
+  };
+}
+
+/** Results over the recent delivered/sold vehicles still kept in state (older ones are pruned). */
+export function actualTrimResults(
+  state: GameState,
+  trim: TrimId,
+): { unitsSold: number; avgPrice: number; avgCost: number; avgMargin: number } {
+  let n = 0;
+  let price = 0;
+  let cost = 0;
+  for (const v of Object.values(state.vehicles)) {
+    if (v.trim !== trim || (v.stage !== 'delivered' && v.stage !== 'sold')) continue;
+    n++;
+    price += v.salePrice ?? 0;
+    cost += v.cost;
+  }
+  if (n === 0) return { unitsSold: 0, avgPrice: 0, avgCost: 0, avgMargin: 0 };
+  const avgPrice = Math.round(price / n);
+  const avgCost = Math.round(cost / n);
+  return { unitsSold: n, avgPrice, avgCost, avgMargin: avgPrice - avgCost };
+}
+
+// ───────────────────────────── orders ─────────────────────────────
+
+export function orderProgress(
+  state: GameState,
+  order: SalesOrder,
+): {
+  reserved: number;
+  inProduction: number;
+  scheduled: number;
+  shortfall: number;
+  ready: boolean;
+  late: boolean;
+  minutesLeft: number;
+} {
+  const reserved = order.reserved.length;
+  let inProduction = 0;
+  let scheduled = 0;
+  const active = order.status === 'accepted' || order.status === 'offered';
+  if (order.status === 'accepted') {
+    for (const v of Object.values(state.vehicles)) {
+      if (v.plannedForOrderId === order.id && isInProduction(v)) inProduction++;
+    }
+    for (const j of state.plan) if (j.orderId === order.id) scheduled += Math.max(0, j.quantity - j.started);
+  }
+  const shortfall = order.status === 'accepted' ? Math.max(0, order.quantity - reserved - inProduction - scheduled) : 0;
+  const ready = order.status === 'accepted' && reserved >= order.quantity;
+  const late = active ? state.time > order.deadline : order.lateDays > 0;
+  return { reserved, inProduction, scheduled, shortfall, ready, late, minutesLeft: order.deadline - state.time };
+}
+
+export function ledgerReconciliation(state: GameState): { expected: number; actual: number; ok: boolean } {
+  const f = state.finance;
+  let sum = 0;
+  for (const e of f.ledger) sum += e.amount;
+  const expected = f.startingCash + f.ledgerCarriedForward + sum;
+  return { expected, actual: state.cash, ok: Math.abs(expected - state.cash) < 0.5 };
+}
+
+// ───────────────────────────── upgrades ─────────────────────────────
+
+export function nextUpgradeCost(state: GameState, kind: 'capacity' | 'reliability', station: StationId): number | null {
+  const st = state.stations[station];
+  const costs = BALANCE.upgrades[kind].costs;
+  const level = kind === 'capacity' ? st.capacityLevel : st.reliabilityLevel;
+  return level < costs.length ? costs[level] : null;
+}
+
+export function nextWarehouseCost(state: GameState): number | null {
+  const costs = BALANCE.upgrades.warehouse.costs;
+  return state.warehouseLevel < costs.length ? costs[state.warehouseLevel] : null;
+}
+
+// ───────────────────────────── vehicles ─────────────────────────────
+
+export function vehiclesInStage(state: GameState, stage: VehicleStage): Vehicle[] {
+  if (stage === 'finished') {
+    return state.yard.map((id) => state.vehicles[String(id)]).filter((v): v is Vehicle => !!v);
+  }
+  return Object.values(state.vehicles)
+    .filter((v) => v.stage === stage)
+    .sort((a, b) => a.id - b.id);
+}
+
+// ───────────────────────────── alerts ─────────────────────────────
+
+function canRepair(state: GameState, id: StationId): boolean {
+  const st = state.stations[id];
+  return st.broken && !st.service && freeTechnicians(state) > 0 && state.cash >= BALANCE.equipment.repair.cost;
+}
+
+function canMaintain(state: GameState, id: StationId): boolean {
+  const st = state.stations[id];
+  return !st.broken && !st.service && freeTechnicians(state) > 0 && state.cash >= BALANCE.equipment.maintenance.cost;
+}
+
+function techOrCashActions(state: GameState, cost: number): { label: string; action: AlertAction }[] {
+  const out: { label: string; action: AlertAction }[] = [];
+  if (freeTechnicians(state) <= 0) {
+    if (state.cash >= BALANCE.staff.technician.hireFee) {
+      out.push({ label: 'Hire technician', action: { kind: 'command', command: { type: 'hire', role: 'technician', count: 1 } } });
+    } else {
+      out.push({ label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } });
+    }
+  }
+  if (state.cash < cost) out.push({ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } });
+  return out;
+}
+
+const SEVERITY_RANK: Record<Alert['severity'], number> = { critical: 0, warning: 1, info: 2 };
+
+export function getAlerts(state: GameState): Alert[] {
+  const alerts: Alert[] = [];
+  const E = BALANCE.equipment;
+
+  if (state.gameOver) {
+    alerts.push({
+      id: 'game-over',
+      severity: 'critical',
+      title: 'Company insolvent — game over',
+      cause: state.gameOverReason ?? 'The company ran out of money.',
+      actions: [{ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
+    });
+  }
+
+  // Insolvency countdown
+  if (state.insolventSince !== null && !state.gameOver) {
+    const left = BALANCE.finance.insolvencyGraceMinutes - (state.time - state.insolventSince);
+    alerts.push({
+      id: 'insolvency',
+      severity: 'critical',
+      title: `Bankruptcy in ${formatDuration(left)}`,
+      cause: `Cash is ${formatMoney(state.cash)}. Get back above $0 (deliver orders, sell cars, cut staff) before the grace period ends.`,
+      actions: [
+        { label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } },
+        { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+      ],
+    });
+  } else if (!state.gameOver) {
+    const costs = projectedDailyCosts(state);
+    if (state.cash < costs.total) {
+      alerts.push({
+        id: 'cash-low',
+        severity: 'warning',
+        title: "Cash won't cover tonight's bills",
+        cause: `Midnight payroll, overhead and energy ≈ ${formatMoney(costs.total)} but cash is ${formatMoney(
+          state.cash,
+        )}. Negative cash starts a ${formatDuration(BALANCE.finance.insolvencyGraceMinutes)} bankruptcy countdown.`,
+        actions: [{ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
+      });
+    }
+  }
+
+  const yardFull = state.yard.length >= yardCapacity(state);
+
+  for (const id of STATION_IDS) {
+    const st = state.stations[id];
+    const name = stationName(id);
+    if (st.service) {
+      alerts.push({
+        id: `service-${id}`,
+        severity: 'info',
+        title: `${name}: ${st.service.kind === 'repair' ? 'repair' : 'maintenance'} in progress`,
+        cause: `A technician is working on it — ${formatDuration(st.service.remaining)} left. Production is paused here.`,
+        actions: [{ label: 'View station', action: { kind: 'openStation', station: id } }],
+      });
+      continue;
+    }
+    if (st.broken) {
+      const actions: { label: string; action: AlertAction }[] = [];
+      if (canRepair(state, id)) {
+        actions.push({ label: `Repair (${formatMoney(E.repair.cost)})`, action: { kind: 'command', command: { type: 'repair', station: id } } });
+      } else {
+        actions.push(...techOrCashActions(state, E.repair.cost));
+      }
+      actions.push({ label: 'View station', action: { kind: 'openStation', station: id } });
+      alerts.push({
+        id: `broken-${id}`,
+        severity: 'critical',
+        title: `${name} has broken down`,
+        cause: `Worn equipment failed (condition ${Math.round(st.condition)}%). Production is stopped until a technician repairs it.`,
+        actions,
+      });
+      continue;
+    }
+    if (breakdownRisk(state, id) === 'high') {
+      const actions: { label: string; action: AlertAction }[] = [];
+      if (canMaintain(state, id)) {
+        actions.push({
+          label: `Schedule maintenance (${formatMoney(E.maintenance.cost)})`,
+          action: { kind: 'command', command: { type: 'scheduleMaintenance', station: id } },
+        });
+      } else {
+        actions.push(...techOrCashActions(state, E.maintenance.cost));
+      }
+      actions.push({ label: 'View station', action: { kind: 'openStation', station: id } });
+      alerts.push({
+        id: `risk-${id}`,
+        severity: 'warning',
+        title: `${name}: high breakdown risk`,
+        cause: `Condition is ${Math.round(st.condition)}% (~${(breakdownHazardPerHour(state, id) * 100).toFixed(1)}% chance of failure per working hour). Maintenance restores it to 100%.`,
+        actions,
+      });
+    }
+
+    const materials = st.issues.find((i) => i.kind === 'materials');
+    if (materials) {
+      const comps = materials.components ?? [];
+      const incoming = comps.reduce((n, c) => n + incomingOf(state, c), 0);
+      alerts.push({
+        id: `materials-${id}`,
+        severity: 'warning',
+        title: `${name} is waiting for parts`,
+        cause: materials.text + (incoming > 0 ? ` — ${incoming} unit(s) already on the way.` : ' — nothing on order.'),
+        actions: [{ label: 'Buy parts', action: { kind: 'openTab', tab: 'suppliers' } }],
+      });
+    }
+
+    const sf = staffFactor(state, id);
+    if (sf < 1 && stationHasWork(state, id)) {
+      const have = stationStaff(state, id);
+      const need = stationRequiredStaff(state, id);
+      const actions: { label: string; action: AlertAction }[] = [];
+      if (id === 'inspection') {
+        if (state.cash >= BALANCE.staff.inspector.hireFee) {
+          actions.push({
+            label: `Hire inspector (${formatMoney(BALANCE.staff.inspector.hireFee)})`,
+            action: { kind: 'command', command: { type: 'hire', role: 'inspector', count: 1 } },
+          });
+        }
+      } else if (unassignedOperators(state) > 0) {
+        actions.push({ label: 'Assign operator', action: { kind: 'command', command: { type: 'assignOperator', station: id, delta: 1 } } });
+      }
+      actions.push({ label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } });
+      const role = id === 'inspection' ? 'inspectors' : 'operators';
+      alerts.push({
+        id: `staff-${id}`,
+        severity: sf === 0 ? 'warning' : 'info',
+        title: sf === 0 ? `${name} has no ${role}` : `${name} is understaffed`,
+        cause:
+          sf === 0
+            ? `Vehicles are waiting but nobody works here (needs ${need} ${role}).`
+            : `${have}/${need} ${role} — running at ${Math.round(sf * 100)}% speed.`,
+        actions,
+      });
+    }
+
+    const downstream = st.issues.find((i) => i.kind === 'downstream');
+    if (downstream && !(id === 'inspection' && yardFull)) {
+      alerts.push({
+        id: `blocked-${id}`,
+        severity: 'warning',
+        title: `${name} output blocked`,
+        cause: `${downstream.text}. Finished work can't move on, so this station stops.`,
+        actions: [{ label: 'View station', action: { kind: 'openStation', station: id } }],
+      });
+    }
+  }
+
+  // Rework bay
+  const reworkCash = state.rework.issues.find((i) => i.kind === 'cash');
+  if (reworkCash) {
+    alerts.push({
+      id: 'rework-cash',
+      severity: 'warning',
+      title: 'Rework bay waiting for cash',
+      cause: `${reworkCash.text}. Each rework costs ${formatMoney(BALANCE.quality.reworkCost)}.`,
+      actions: [{ label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
+    });
+  }
+
+  // Yard
+  const ycap = yardCapacity(state);
+  if (yardFull) {
+    alerts.push({
+      id: 'yard-full',
+      severity: 'warning',
+      title: 'Finished-vehicle yard is full',
+      cause: `${state.yard.length}/${ycap} spaces used — inspection cannot release cars. Deliver orders, list cars on the market or lower prices.`,
+      actions: [
+        { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+        { label: 'Open Vehicles', action: { kind: 'openTab', tab: 'vehicles' } },
+      ],
+    });
+  }
+
+  // Orders
+  let offers = 0;
+  for (const o of state.orders) {
+    if (o.status === 'offered') {
+      offers++;
+      continue;
+    }
+    if (o.status !== 'accepted') continue;
+    const p = orderProgress(state, o);
+    const label = `Order #${o.id} (${o.dealer})`;
+    if (p.ready) {
+      alerts.push({
+        id: `ready-${o.id}`,
+        severity: p.late ? 'warning' : 'info',
+        title: `${label} ready to deliver`,
+        cause: `All ${o.quantity} ${trimName(o.trim)} cars are in the yard${p.late ? ' — it is already late, deliver now' : ''}.`,
+        actions: [{ label: 'Deliver', action: { kind: 'command', command: { type: 'deliverOrder', orderId: o.id } } }],
+      });
+      continue;
+    }
+    if (p.shortfall > 0) {
+      alerts.push({
+        id: `shortfall-${o.id}`,
+        severity: p.late ? 'critical' : 'warning',
+        title: p.late ? `${label} is late and under-scheduled` : `${label} needs ${p.shortfall} more car(s) scheduled`,
+        cause: `${p.reserved} ready, ${p.inProduction} in production, ${p.scheduled} scheduled of ${o.quantity}. ${
+          p.late ? `Deadline passed ${formatDuration(-p.minutesLeft)} ago.` : `Due in ${formatDuration(p.minutesLeft)}.`
+        }`,
+        actions: [
+          { label: `Schedule ${p.shortfall} build(s)`, action: { kind: 'command', command: { type: 'scheduleForOrder', orderId: o.id } } },
+          { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+        ],
+      });
+      continue;
+    }
+    if (p.late) {
+      const cancelIn = o.deadline + o.cancelAfterLateMinutes - state.time;
+      alerts.push({
+        id: `late-${o.id}`,
+        severity: 'critical',
+        title: `${label} is late`,
+        cause: `${p.reserved}/${o.quantity} cars ready. The dealer cancels in ${formatDuration(cancelIn)} (fee ${formatMoney(o.cancelFee)}).`,
+        actions: [{ label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } }],
+      });
+    }
+  }
+  if (offers > 0) {
+    alerts.push({
+      id: 'offers',
+      severity: 'info',
+      title: offers === 1 ? '1 new order offer' : `${offers} new order offers`,
+      cause: 'Dealers are waiting for an answer. Offers expire if you ignore them.',
+      actions: [{ label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } }],
+    });
+  }
+
+  // Nothing scheduled
+  const stamping = state.stations.stamping;
+  const hasPlan = state.plan.some((j) => j.started < j.quantity);
+  if (!hasPlan && stamping.slots.every((s) => s === null) && !state.gameOver) {
+    alerts.push({
+      id: 'idle',
+      severity: 'info',
+      title: 'No production scheduled',
+      cause: 'Stamping is idle because the production plan is empty. Schedule builds for orders or for the market.',
+      actions: [
+        { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+        { label: 'Build 1 Economy', action: { kind: 'command', command: { type: 'scheduleBuild', trim: 'economy', quantity: 1 } } },
+      ],
+    });
+  }
+
+  // Warehouse
+  const wcap = warehouseCapacity(state);
+  const used = stockOnHand(state) + incomingUnits(state);
+  if (used >= wcap * 0.9) {
+    alerts.push({
+      id: 'warehouse',
+      severity: 'info',
+      title: 'Warehouse nearly full',
+      cause: `${used}/${wcap} component spaces used (including deliveries on the way). New purchases need free space.`,
+      actions: [
+        { label: 'Open Suppliers', action: { kind: 'openTab', tab: 'suppliers' } },
+        { label: 'Open Upgrades', action: { kind: 'openTab', tab: 'upgrades' } },
+      ],
+    });
+  }
+
+  alerts.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
+  return alerts;
+}
+
+// ───────────────────────────── tutorial ─────────────────────────────
+
+export function tutorialSteps(state: GameState): TutorialStep[] {
+  const s = state.stats;
+  const offered = state.orders.find((o) => o.status === 'offered');
+  const shortOrder = state.orders.find((o) => o.status === 'accepted' && orderProgress(state, o).shortfall > 0);
+  const readyOrder = state.orders.find((o) => o.status === 'accepted' && o.reserved.length >= o.quantity);
+  const unassigned = unassignedOperators(state);
+  const paint = state.stations.paint.assigned;
+  const final = state.stations.final.assigned;
+  const scheduledForOrder = s.vehiclesStarted > 0 || state.plan.some((j) => j.orderId !== null);
+
+  let staffAction: TutorialStep['action'] = { label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } };
+  if (unassigned > 0 && paint === 0) {
+    staffAction = { label: 'Assign to Paint', action: { kind: 'command', command: { type: 'assignOperator', station: 'paint', delta: 1 } } };
+  } else if (unassigned > 0 && final < BALANCE.stations.final.staffPerSlot) {
+    staffAction = { label: 'Assign to Final', action: { kind: 'command', command: { type: 'assignOperator', station: 'final', delta: 1 } } };
+  }
+
+  const steps: TutorialStep[] = [
+    {
+      id: 'accept-order',
+      title: 'Accept your first order',
+      text: 'Open the Orders tab and accept the dealer order. Accepted orders have a deadline — late deliveries lose money and reputation.',
+      done: s.ordersAccepted > 0,
+      action: offered
+        ? { label: `Accept order #${offered.id}`, action: { kind: 'command', command: { type: 'acceptOrder', orderId: offered.id } } }
+        : { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+    },
+    {
+      id: 'buy-components',
+      title: 'Buy components',
+      text: 'Each Economy car needs 2 steel, 1 paint, a powertrain, an interior and a wheel set. Buy what is missing from a supplier — deliveries take a few hours.',
+      done: s.purchases > 0,
+      action: { label: 'Open Suppliers', action: { kind: 'openTab', tab: 'suppliers' } },
+    },
+    {
+      id: 'staff-stations',
+      title: 'Staff Paint & Final Assembly',
+      text: 'Paint and Final Assembly have no operators. Hire operators and assign them so cars can flow through the whole line.',
+      done: paint > 0 && final > 0,
+      action: staffAction,
+    },
+    {
+      id: 'schedule',
+      title: 'Schedule production for the order',
+      text: 'Add a production job for the order so Stamping starts building the cars.',
+      done: scheduledForOrder,
+      action: shortOrder
+        ? { label: 'Schedule builds', action: { kind: 'command', command: { type: 'scheduleForOrder', orderId: shortOrder.id } } }
+        : { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+    },
+    {
+      id: 'build',
+      title: 'Build & inspect cars',
+      text: 'Cars move Stamping → Body → Paint → Final → Inspection. Inspection catches defects and sends them to the rework bay. Watch for bottlenecks.',
+      done: s.vehiclesBuilt > 0,
+      action: { label: 'View Inspection', action: { kind: 'openStation', station: 'inspection' } },
+    },
+    {
+      id: 'deliver',
+      title: 'Deliver the order',
+      text: 'When every car for the order is in the yard, deliver it before the deadline.',
+      done: s.ordersDelivered > 0,
+      action: readyOrder
+        ? { label: 'Deliver now', action: { kind: 'command', command: { type: 'deliverOrder', orderId: readyOrder.id } } }
+        : { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
+    },
+    {
+      id: 'collect',
+      title: 'Collect payment',
+      text: 'The dealer pays when the payment terms run out. Track cash, receivables and profit in Finances.',
+      done: s.ordersPaid > 0,
+      action: { label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } },
+    },
+  ];
+  return steps;
+}
