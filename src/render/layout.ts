@@ -130,12 +130,13 @@ export function computeLayout(state: GameState): FactoryLayout {
   // Rework bay: below inspection, fixed y so it does not jump when slots change.
   const insp = stations.inspection;
   const maxBoxBottom = G.lineTop + G.header + G.maxSlots * G.rowH + 8;
-  const rwW = 300;
+  // One extra spot: the sim may briefly hold capacity + 1 cars to avoid a rework/inspection gridlock.
+  const rwW = 300 + 64;
   const rwX = insp.box.x + insp.box.w - rwW;
   const rwY = maxBoxBottom + 22;
   const rwBox: Rect = { x: rwX, y: rwY, w: rwW, h: 96 };
   const rwQueue: Rect[] = [];
-  for (let i = 0; i < BALANCE.quality.reworkQueueCapacity; i++) {
+  for (let i = 0; i < BALANCE.quality.reworkQueueCapacity + 1; i++) {
     rwQueue.push({ x: rwX + 8 + i * 64, y: rwY + 30, w: 60, h: 56 });
   }
   const rwSlot: Rect = { x: rwX + rwW - 100, y: rwY + 26, w: 92, h: 62 };

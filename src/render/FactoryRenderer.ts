@@ -1129,7 +1129,7 @@ export class FactoryRenderer {
     const rw = layout.rework;
     const t: HitTarget = { kind: 'station', id: 'inspection' };
     const hov = this.isHovered(t);
-    this.panel(rw.box, 'REWORK BAY', null, `${state.rework.queue.length}/${rw.queueSpots.length} waiting`);
+    this.panel(rw.box, 'REWORK BAY', null, `${state.rework.queue.length}/${BALANCE.quality.reworkQueueCapacity} waiting`);
     if (hov || this.selected === 'inspection') {
       ctx.strokeStyle = this.selected === 'inspection' ? 'rgba(240,124,30,0.6)' : COLORS.steelLight;
       ctx.lineWidth = 2;
