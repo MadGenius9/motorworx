@@ -1,15 +1,21 @@
+import { useState } from 'react';
 import { KV, Modal } from './common';
 import { formatMoney, formatTime } from './format';
+import { NewGameDialog } from './NewGameDialog';
 import { useUi } from './useGame';
 
 export function GameOverModal() {
   const { state, controller } = useUi();
+  const [picking, setPicking] = useState(false);
   const s = state.stats;
+  if (picking) {
+    return <NewGameDialog warning={false} onCancel={() => setPicking(false)} onStart={(sc) => controller.newGame(sc)} />;
+  }
   return (
     <Modal
       title="Game over"
       footer={
-        <button type="button" className="btn btn-primary" data-autofocus onClick={() => controller.newGame()}>
+        <button type="button" className="btn btn-primary" data-autofocus onClick={() => setPicking(true)}>
           Start new game
         </button>
       }

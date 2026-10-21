@@ -41,6 +41,10 @@ You are not alone: three rival makers (Vantor, Halberd, Sunline) compete for ope
 
 The **R&D** tab runs one research project at a time: faster stations, fewer defects, cheaper builds, more dealer orders and more appealing cars. Each project costs cash up front and finishes after some game hours.
 
+Pick a **scenario** when you start a new game: the Standard start, Shoestring (little cash, worn machines) or a Crowded market (stronger rivals). Each has a goal (a net worth, plus market share in the crowded market) and a gold/silver/bronze rating by how many days you take. The **Goals** tab tracks the goal, twelve milestones and any active events. Reaching the goal doesn't end the game.
+
+From day 6, random events shake things up: supplier strikes, parts price spikes, recessions and booms, and recalls if defective cars reach customers. **Finances** offers loans when you need cash fast (repaid daily with interest). In **Staff**, wages set morale: happy workers are faster and make fewer mistakes, unhappy ones may strike. Training courses make operators, inspectors and technicians better.
+
 When reputation and cash allow, build a second (and third) plant from **Upgrades**. Each plant has its own line, staff and upgrades, and shares cash, parts, the yard and the production plan. Switch plants with the tabs above the factory, and dedicate a plant to one model (Stamping panel) to avoid retooling.
 
 The factory is shown in **3D** (three.js/WebGL): drag to pan, right-drag (or Shift+drag) to rotate, mouse wheel to zoom toward the cursor, click a station for details and actions. The **2D** button switches to the flat plan view; browsers without WebGL get the 2D view automatically. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.

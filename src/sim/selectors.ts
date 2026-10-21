@@ -908,6 +908,13 @@ function techOrCashActions(state: GameState, cost: number): { label: string; act
   return out;
 }
 
+/** "Borrow $X" for the smallest loan the bank will give right now. */
+function borrowActions(state: GameState): Alert['actions'] {
+  const i = BALANCE.loans.offers.findIndex((_, k) => loanBlocker(state, k) === null);
+  if (i < 0) return [];
+  return [{ label: `Borrow ${formatMoney(BALANCE.loans.offers[i].amount)}`, action: { kind: 'command', command: { type: 'takeLoan', offer: i } } }];
+}
+
 const SEVERITY_RANK: Record<Alert['severity'], number> = { critical: 0, warning: 1, info: 2 };
 
 export function getAlerts(state: GameState): Alert[] {
@@ -933,6 +940,7 @@ export function getAlerts(state: GameState): Alert[] {
       title: `Bankruptcy in ${formatDuration(left)}`,
       cause: `Cash is ${formatMoney(state.cash)}. Get back above $0 (deliver orders, sell cars, cut staff) before the grace period ends.`,
       actions: [
+        ...borrowActions(state),
         { label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } },
         { label: 'Open Orders', action: { kind: 'openTab', tab: 'orders' } },
       ],
@@ -1306,6 +1314,47 @@ export function getAlerts(state: GameState): Alert[] {
     });
   }
 
+  // Events, morale and loans
+  if (!state.gameOver) {
+    for (const i of activeIncidents(state)) {
+      const tab: PanelTab = i.kind === 'supplierStrike' || i.kind === 'priceSpike' ? 'suppliers' : i.kind === 'laborStrike' ? 'staff' : 'goals';
+      alerts.push({
+        id: `incident-${i.id}`,
+        severity: i.kind === 'laborStrike' ? 'critical' : i.kind === 'boom' ? 'info' : 'warning',
+        title: `${incidentTitle(state, i)} (${formatDuration(i.until - state.time)} left)`,
+        cause: incidentDetail(i),
+        actions: [{ label: `Open ${tab === 'goals' ? 'Goals' : tab === 'staff' ? 'Staff' : 'Suppliers'}`, action: { kind: 'openTab', tab } }],
+      });
+    }
+    const W = BALANCE.workforce;
+    const wf = state.workforce;
+    if (wf.morale < W.strike.belowMorale + 8 && !activeIncidents(state).some((i) => i.kind === 'laborStrike')) {
+      const actions: Alert['actions'] = [];
+      if (wf.wage !== 'high') {
+        const up = wf.wage === 'low' ? 'standard' : 'high';
+        actions.push({ label: `Raise wages to ${W.wages[up].label.toLowerCase()}`, action: { kind: 'command', command: { type: 'setWage', level: up } } });
+      }
+      actions.push({ label: 'Open Staff', action: { kind: 'openTab', tab: 'staff' } });
+      alerts.push({
+        id: 'morale',
+        severity: wf.morale < W.strike.belowMorale ? 'critical' : 'warning',
+        title: wf.morale < W.strike.belowMorale ? 'Workers are close to striking' : 'Morale is low',
+        cause: `Morale ${Math.round(wf.morale)}/100 (heading for ${W.wages[wf.wage].moraleTarget}). Low morale slows work and adds defects; below ${W.strike.belowMorale} a plant may strike.`,
+        actions,
+      });
+    }
+    const payments = dailyLoanPayments(state);
+    if (payments > 0 && state.cash < payments + projectedDailyCosts(state).total && state.insolventSince === null) {
+      alerts.push({
+        id: 'loan-due',
+        severity: 'warning',
+        title: `Midnight bills of ${formatMoney(payments + projectedDailyCosts(state).total)} exceed your cash`,
+        cause: `Loan repayments (${formatMoney(payments)}) plus payroll and overhead are due tonight.`,
+        actions: [...borrowActions(state), { label: 'Open Finances', action: { kind: 'openTab', tab: 'finances' } }],
+      });
+    }
+  }
+
   alerts.sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);
   return alerts;
 }
@@ -1577,7 +1626,6 @@ export function loanBlocker(state: GameState, offer: number): string | null {
   if (state.loans.length >= BALANCE.loans.maxLoans) return `You can have at most ${BALANCE.loans.maxLoans} loans at once.`;
   const room = creditLimit(state) - totalDebt(state);
   if (o.amount > room) return `Over your credit limit: ${formatMoney(Math.max(0, room))} of ${formatMoney(creditLimit(state))} left.`;
-  if (state.insolventSince !== null) return 'Banks will not lend while your cash is negative.';
   return null;
 }
 

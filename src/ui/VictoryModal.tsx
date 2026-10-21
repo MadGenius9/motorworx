@@ -1,3 +1,4 @@
+import './goals.css';
 import { dayOf, medalFor, netWorth, scenarioSpec } from '../sim/selectors';
 import { KV, Modal } from './common';
 import { formatMoney } from './format';

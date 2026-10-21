@@ -27,12 +27,14 @@ Rule: **simulation never imports render/UI; render/UI never mutate state except 
 Order within one tick (deterministic; all randomness via `state.rng`):
 1. If `state.gameOver` → return without changing anything.
 2. `state.time += 1`.
-3. Shipments whose `arrivesAt <= time` move into inventory (qty, value = qty×unitCost, qualitySum = qty×quality). Event log entry.
+3. Expired events (`state.incidents`) are removed and logged. Shipments whose `arrivesAt <= time` move into inventory (deliveries from a supplier on strike wait) (qty, value = qty×unitCost, qualitySum = qty×quality). Event log entry.
 4. Stations processed downstream-first: inspection, rework bay, final, paint, body, stamping. Each station's `issues` array is rebuilt every tick.
 5. Market sales (every `market.checkEveryMinutes`).
 6. Order generation (every `orders.checkEveryMinutes`), offer expiry, late warnings, auto-cancellation, payment collection.
-7. Midnight billing (payroll + utilities = overhead.dailyBase + Σ station.energyAccrued), daily summary push, `builtToday` reset.
-8. Insolvency: cash < 0 → set `insolventSince` (if null); cash ≥ 0 → clear. If `time − insolventSince ≥ finance.insolvencyGraceMinutes` → `gameOver = true`, reason text.
+7. Midnight: rival moves, then `eventsMidnight` (loan instalments, morale drift and a possible labour strike, a possible random event), then billing (payroll + utilities = overhead.dailyBase + Σ station.energyAccrued), daily summary push, `builtToday` reset.
+8. Research and training courses advance one minute (before stations, with shipments).
+9. Every game hour: `checkGoals` (milestones, then the scenario goal) and history pruning.
+10. Insolvency: cash < 0 → set `insolventSince` (if null); cash ≥ 0 → clear. If `time − insolventSince ≥ finance.insolvencyGraceMinutes` → `gameOver = true`, reason text.
 
 ### Station tick
 ```
@@ -124,6 +126,20 @@ Sale: cash += price (ledger 'sales'), revenue += price, cogs += vehicle.cost, st
 * Balance check (automated player, 25 days, 6 seeds): building the second plant around day 10 ends at +45 % net worth.
 * Saves are version 5; v4 saves become a single Riverside plant with every inspector assigned to it.
 
+## Goals, events, loans and the workforce (milestone 6)
+
+Code: `src/sim/events.ts` (called from `engine.step`), selectors at the end of `selectors.ts`, config in `BALANCE.scenarios`, `milestones`, `incidents`, `loans`, `workforce`.
+
+* **Scenarios** (`state.goals.scenario`, chosen in the New game dialog): Standard ($120k, goal $5M net worth), Shoestring ($65k, worn machines, reputation 42, goal $3M), Crowded market (stronger rivals that launch models twice as early and win waiting offers 1.6× as often; goal $3M and 25 % open-market share over 7 days). `createInitialState(seed, scenario)`; `rivalLaunchDay(scenario, rival, model)`.
+* **Net worth** = cash + inventory (raw, incoming, WIP, finished) + receivables + capital spending at cost − loan balances. Reaching the goal sets `goals.wonAt`, logs a `victory` event and shows the victory screen once; the game carries on. Rating by day: gold ≤ `parDays`, silver ≤ 1.5×, bronze after.
+* **Milestones** (12, checked hourly, each once): award reputation and log a `milestone` event. Loading an older save records milestones already met quietly.
+* **Random events** (`state.incidents`, `Incident` with `until`): from day 6, a 22 % chance per midnight (× scenario) of one of supplier strike (2 days: no orders, deliveries held), price spike (one component +40 % for 3 days), recession (demand ×0.7, offers ×0.75 for 4 days), boom (×1.3 / ×1.25 for 3 days) or a recall (only with defects that reached customers in the last 5 days: $1,800 per recent car of that model, reputation −4). Never two of a kind, never recession and boom together.
+* **Loans** (`state.loans`): three offers (50k/10 days, 150k/20 days, 400k/30 days at 0.4–0.6 % a day). Credit limit = 20k + 3k × reputation + 150k per extra operating plant; at most three loans. Fixed daily instalments at midnight: interest is an expense (`interest`), principal moves under the financing category `loan` (like the payout), so the ledger still reconciles. Early repayment pays the balance. Insolvency alerts offer the smallest available loan.
+* **Workforce** (`state.workforce`): wage level low/standard/high (×0.85/1/1.2 payroll) sets the morale target (24/62/84); morale closes 30 % of the gap each midnight, drops 3 per dismissal, rises 5 per finished course. Morale scales work speed (0.85 at 0, 1.0 at 50, 1.06 at 100) and raises defects below 50 (up to +50 %). Below 30 a labour strike (35 %/day) stops one plant for 10 hours (`staffFactor` = 0 there). Training (one course at a time, levels 0–3, cost = base + $400 × headcount): operators +4 % speed and ×0.88 defects per level, inspectors +4 pts detection, technicians ×0.85 maintenance/repair time.
+* **Event tags**: `EventLogEntry.tag` (offer, delivered, paid, sale, breakdown, research, plant, milestone, victory, incident, strike, loan) drives sounds and celebrations in the UI.
+* Balance check (automated growth player, 4 seeds per scenario): $5M around day 31–32 in every scenario; the low-cash start survives with one short-term loan.
+* Saves are version 6; v5 saves play the standard scenario with standard wages and no loans or events.
+
 ## 3D factory view
 
 * `src/render3d/Factory3DRenderer.ts` (three.js) is the default view; `src/render/FactoryRenderer.ts` (Canvas 2D) stays as the plan view and the automatic fallback when WebGL is unavailable. `FactoryCanvas` picks the mode (remembered in localStorage under `motorworx-view-mode`) and gives each mode a fresh canvas.
@@ -181,7 +197,7 @@ Alerts to cover: broken station (Repair command), service in progress (info), hi
 Tutorial steps: accept first order → buy components → staff Paint & Final Assembly → schedule production for the order → build & inspect cars → deliver the order → collect payment.
 
 ## Save (`src/sim/save.ts`)
-`serialize(state): string`, `deserialize(json): GameState` (throws a readable Error on bad/incompatible data; checks `version === SAVE_VERSION`), `createInitialState(seed?)` lives in `initialState.ts`.
+`serialize(state): string`, `deserialize(json): GameState` (throws a readable Error on bad/incompatible data; checks `version === SAVE_VERSION`), `createInitialState(seed?, scenario?)` lives in `initialState.ts`.
 
 ## Visual style
 Industrial: charcoal `#1b1d20` / `#24272b`, steel gray `#3a3f45` / `#8a939c`, text `#e6e8ea`, orange accent `#f07c1e`. Status: running green `#3fb950`, idle gray `#8a939c`, blocked/understaffed amber `#e3a008`, broken red `#e5484d`, maintenance/repair blue `#3b82f6`. Readable system font stack, tabular numbers.

@@ -1,3 +1,4 @@
+import '../goals.css';
 import { BALANCE } from '../../config/balance';
 import {
   activeIncidents,
@@ -33,7 +34,7 @@ export function GoalsTab() {
         <p className="small muted">{sc.blurb}</p>
         <div className="goal-row">
           <KV k="Net worth" v={`${formatMoney(g.netWorth)} / ${formatMoney(g.netWorthTarget)}`} tone={g.netWorth >= g.netWorthTarget ? 'good' : undefined} />
-          <Bar value={Math.max(0, g.netWorth)} max={g.netWorthTarget} height={8} color="var(--good)" />
+          <Bar value={Math.max(0, g.netWorth)} max={g.netWorthTarget} height={8} color="var(--green)" />
         </div>
         {g.shareTarget > 0 && (
           <div className="goal-row">

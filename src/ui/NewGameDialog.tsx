@@ -1,3 +1,4 @@
+import './goals.css';
 import { useState } from 'react';
 import { BALANCE, SCENARIO_IDS, type ScenarioId } from '../config/balance';
 import { Modal } from './common';

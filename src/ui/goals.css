@@ -1,0 +1,139 @@
+/* Goals tab, scenario picker, victory medal, wages and training (milestone 6). */
+
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin-top: 8px;
+}
+.scenario-card {
+  font: inherit;
+  color: var(--text);
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: pointer;
+  min-height: 44px;
+}
+.scenario-card:hover {
+  border-color: var(--muted);
+}
+.scenario-card.is-picked {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  background: var(--accent-dim);
+}
+.scenario-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.scenario-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  color: var(--muted);
+  margin-top: auto;
+}
+
+.goal-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0 8px;
+}
+
+.milestones {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.milestones li {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding: 5px 4px;
+  border-bottom: 1px solid var(--border);
+}
+.milestones li:last-child {
+  border-bottom: 0;
+}
+.milestone-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.milestone-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 700;
+}
+.milestones li.is-done .milestone-check {
+  background: var(--green);
+  border-color: var(--green);
+  color: var(--bg);
+}
+.milestones li:not(.is-done) b {
+  color: var(--muted);
+}
+
+.incident {
+  border-left: 3px solid var(--amber);
+}
+.incident-boom {
+  border-left-color: var(--green);
+}
+.incident-laborStrike,
+.incident-supplierStrike {
+  border-left-color: var(--red);
+}
+
+.seg-control {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 4px;
+}
+
+.medal {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.medal-disc {
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  box-shadow:
+    inset 0 -4px 0 rgba(0, 0, 0, 0.25),
+    0 0 0 3px rgba(255, 255, 255, 0.08);
+}
+.medal-gold .medal-disc {
+  background: radial-gradient(circle at 35% 30%, #fff3b0, #e3a008 55%, #a46d00);
+}
+.medal-silver .medal-disc {
+  background: radial-gradient(circle at 35% 30%, #ffffff, #b8c0c8 55%, #6f7880);
+}
+.medal-bronze .medal-disc {
+  background: radial-gradient(circle at 35% 30%, #ffd2a8, #c27a3a 55%, #7a4719);
+}

@@ -3,15 +3,18 @@ import { BALANCE, COMPONENT_IDS, TRIM_IDS, type ComponentId, type ModelId, type 
 import {
   avgQuality,
   avgUnitCost,
+  componentPriceMult,
   incomingUnits,
   kitCost,
   kitShortfall,
   stockOnHand,
+  supplierOnStrike,
+  supplierUnitPrice,
   unlockedModels,
   vehicleLabel,
   warehouseCapacity,
 } from '../../sim/selectors';
-import { ActionButton, Bar, Section } from '../common';
+import { ActionButton, Bar, Pill, Section } from '../common';
 import { componentName, componentsPerVehicle, formatDuration, formatMoney, formatTime, pct } from '../format';
 import { useUi } from '../useGame';
 
@@ -150,9 +153,13 @@ export function SuppliersTab() {
 
         <div className="supplier-grid">
           {BALANCE.suppliers.map((sup) => {
-            const unit = Math.round(BALANCE.components[component].basePrice * sup.priceMult);
+            const unit = supplierUnitPrice(sup.id, component, state) ?? 0;
+            const spiked = componentPriceMult(state, component) > 1;
+            const strike = supplierOnStrike(state, sup.id);
             const total = qtyValid ? unit * qty : 0;
-            const reason = !qtyValid
+            const reason = strike
+              ? `On strike until ${formatTime(strike.until)}`
+              : !qtyValid
               ? 'Enter a valid quantity'
               : state.cash < total
                 ? `Not enough cash (need ${formatMoney(total)})`
@@ -163,11 +170,15 @@ export function SuppliersTab() {
               <div key={sup.id} className="card supplier">
                 <div className="card-head">
                   <b>{sup.name}</b>
+                  {strike && <Pill tone="bad">On strike</Pill>}
                 </div>
                 <div className="muted small">{sup.blurb}</div>
                 <div className="grid2 small">
                   <span className="muted">Price / unit</span>
-                  <span className="num">{formatMoney(unit)}</span>
+                  <span className={`num${spiked ? ' tone-bad' : ''}`} title={spiked ? 'Price spike in effect' : undefined}>
+                    {formatMoney(unit)}
+                    {spiked ? ' ▲' : ''}
+                  </span>
                   <span className="muted">Lead time</span>
                   <span className="num">{formatDuration(sup.leadMinutes)}</span>
                   <span className="muted">Quality</span>
@@ -275,9 +286,11 @@ function KitSection() {
           </p>
           <div className="btn-group kit-buttons">
             {BALANCE.suppliers.map((sup) => {
-              const cost = kitCost(sup.id, kit);
-              const reason =
-                state.cash < cost
+              const cost = kitCost(sup.id, kit, state);
+              const strike = supplierOnStrike(state, sup.id);
+              const reason = strike
+                ? `${sup.name} is on strike`
+                : state.cash < cost
                   ? `Not enough cash (need ${formatMoney(cost)})`
                   : units > free
                     ? `Not enough warehouse space (${Math.max(0, free)} free)`

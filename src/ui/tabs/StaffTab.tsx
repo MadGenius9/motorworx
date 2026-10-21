@@ -1,10 +1,31 @@
-import { BALANCE, STATION_IDS, type StaffRole } from '../../config/balance';
-import { dailyPayroll, freeTechnicians, stationRequiredStaff, unassignedInspectors, unassignedOperators } from '../../sim/selectors';
-import { ActionButton, KV, Section } from '../common';
-import { formatMoney, stationName } from '../format';
+import '../goals.css';
+import { BALANCE, STATION_IDS, WAGE_LEVELS, type StaffRole } from '../../config/balance';
+import {
+  dailyPayroll,
+  freeTechnicians,
+  moraleLabel,
+  moraleSpeed,
+  stationRequiredStaff,
+  trainingBlocker,
+  trainingCost,
+  unassignedInspectors,
+  unassignedOperators,
+  workforceDefectMult,
+} from '../../sim/selectors';
+import { ActionButton, Bar, KV, Pill, Section } from '../common';
+import { formatDuration, formatMoney, stationName } from '../format';
 import { useUi } from '../useGame';
 
 const ROLES: StaffRole[] = ['operator', 'inspector', 'technician'];
+
+const TRAINING_EFFECT: Record<StaffRole, (level: number) => string> = {
+  operator: (l) =>
+    `+${Math.round(l * BALANCE.workforce.training.operatorSpeedPerLevel * 100)}% speed, −${Math.round(
+      (1 - Math.pow(BALANCE.workforce.training.operatorDefectMultPerLevel, l)) * 100,
+    )}% defects`,
+  inspector: (l) => `+${Math.round(l * BALANCE.workforce.training.inspectorDetectionPerLevel * 100)} pts detection`,
+  technician: (l) => `−${Math.round((1 - Math.pow(BALANCE.workforce.training.technicianTimeMultPerLevel, l)) * 100)}% service time`,
+};
 
 const ROLE_HELP: Record<StaffRole, string> = {
   operator: 'Run stamping, body, paint and final assembly. Assign them to stations below.',
@@ -18,6 +39,11 @@ export function StaffTab() {
   const freeInspectors = unassignedInspectors(state);
   const freeTech = freeTechnicians(state);
   const payroll = dailyPayroll(state);
+  const wf = state.workforce;
+  const W = BALANCE.workforce;
+  const mood = moraleLabel(wf.morale);
+  const moodTone = wf.morale >= 75 ? 'good' : wf.morale >= 50 ? 'info' : wf.morale >= W.strike.belowMorale ? 'warn' : 'bad';
+  const target = W.wages[wf.wage].moraleTarget;
 
   const fireReason = (role: StaffRole): string | null => {
     if (state.staff[role] <= 0) return `No ${BALANCE.staff[role].plural.toLowerCase()} to dismiss`;
@@ -37,6 +63,81 @@ export function StaffTab() {
         )}
       </Section>
 
+      <Section title="Morale & wages" right={<Pill tone={moodTone}>{mood}</Pill>}>
+        <div className="goal-row">
+          <KV k="Morale" v={`${Math.round(wf.morale)} → ${target}`} />
+          <Bar value={wf.morale} max={100} height={8} color={wf.morale >= 50 ? 'var(--green)' : wf.morale >= W.strike.belowMorale ? 'var(--amber)' : 'var(--red)'} />
+        </div>
+        <KV k="Work speed from morale" v={`${Math.round((moraleSpeed(state) - 1) * 100) >= 0 ? '+' : ''}${Math.round((moraleSpeed(state) - 1) * 100)}%`} />
+        <KV k="Defect rate vs. normal" v={`×${workforceDefectMult(state).toFixed(2)}`} tone={workforceDefectMult(state) > 1 ? 'warn' : undefined} />
+        <div className="seg-control" role="radiogroup" aria-label="Wage level">
+          {WAGE_LEVELS.map((lvl) => (
+            <button
+              key={lvl}
+              type="button"
+              role="radio"
+              aria-checked={wf.wage === lvl}
+              className={`btn btn-sm${wf.wage === lvl ? ' btn-primary' : ''}`}
+              onClick={() => wf.wage !== lvl && dispatch({ type: 'setWage', level: lvl })}
+            >
+              {W.wages[lvl].label}
+            </button>
+          ))}
+        </div>
+        <p className="small muted">
+          Morale moves toward the wage level's target every night ({W.wages.low.moraleTarget} / {W.wages.standard.moraleTarget} /{' '}
+          {W.wages.high.moraleTarget}). Dismissals cost {W.firingMoraleHit} points; finished training adds {W.trainingMoraleBoost}. Below{' '}
+          {W.strike.belowMorale}, workers may strike and stop a plant for {Math.round(W.strike.minutes / 60)}h.
+        </p>
+      </Section>
+
+      <Section title="Training">
+        {wf.course && (
+          <div className="card">
+            <div className="card-head">
+              <b>
+                {BALANCE.staff[wf.course.role].plural}: level {wf.training[wf.course.role] + 1} course
+              </b>
+              <span className="small num muted">{formatDuration(wf.course.remaining)} left</span>
+            </div>
+            <Bar value={wf.course.total - wf.course.remaining} max={wf.course.total} />
+          </div>
+        )}
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Role</th>
+              <th>Level</th>
+              <th>Effect</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {ROLES.map((role) => {
+              const lvl = wf.training[role];
+              const cost = trainingCost(state, role);
+              return (
+                <tr key={role}>
+                  <td>{BALANCE.staff[role].plural}</td>
+                  <td className="num">
+                    {lvl}/{W.training.maxLevel}
+                  </td>
+                  <td className="small">{lvl > 0 ? TRAINING_EFFECT[role](lvl) : <span className="muted">Untrained</span>}</td>
+                  <td className="r">
+                    {cost !== null && (
+                      <ActionButton small disabledReason={trainingBlocker(state, role)} onClick={() => dispatch({ type: 'startTraining', role })}>
+                        Train · {formatMoney(cost)}
+                      </ActionButton>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p className="small muted">Courses train everyone in the role, including later hires. One course runs at a time; the price grows with headcount.</p>
+      </Section>
+
       <Section title="Workforce">
         {ROLES.map((role) => {
           const r = BALANCE.staff[role];
@@ -48,7 +149,8 @@ export function StaffTab() {
                   {r.plural} <span className="num">× {state.staff[role]}</span>
                 </b>
                 <span className="muted small num">
-                  {formatMoney(r.dailyWage)}/day each · {formatMoney(r.dailyWage * state.staff[role])}/day total
+                  {formatMoney(Math.round(r.dailyWage * W.wages[wf.wage].payMult))}/day each ·{' '}
+                  {formatMoney(Math.round(r.dailyWage * W.wages[wf.wage].payMult * state.staff[role]))}/day total
                 </span>
               </div>
               <div className="muted small">{ROLE_HELP[role]}</div>
