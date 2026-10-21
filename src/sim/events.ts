@@ -40,7 +40,7 @@ export function checkGoals(state: GameState, silent = false): void {
     logEvent(
       state,
       'good',
-      `Milestone reached: ${spec.name} (${spec.description.replace(/\.$/, '')})${spec.reputation ? `. Reputation +${spec.reputation}` : ''}.`,
+      `Milestone reached: ${spec.name}.${spec.reputation ? ` Reputation +${spec.reputation}.` : ''}`,
       'milestone',
     );
   }

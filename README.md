@@ -47,7 +47,7 @@ From day 6, random events shake things up: supplier strikes, parts price spikes,
 
 When reputation and cash allow, build a second (and third) plant from **Upgrades**. Each plant has its own line, staff and upgrades, and shares cash, parts, the yard and the production plan. Switch plants with the tabs above the factory, and dedicate a plant to one model (Stamping panel) to avoid retooling.
 
-The factory is shown in **3D** (three.js/WebGL): drag to pan, right-drag (or Shift+drag) to rotate, mouse wheel to zoom toward the cursor, click a station for details and actions. The **2D** button switches to the flat plan view; browsers without WebGL get the 2D view automatically. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
+The factory is shown in **3D** (three.js/WebGL): drag to pan, right-drag (or Shift+drag) to rotate, mouse wheel to zoom toward the cursor, click a station for details and actions. The **2D** button switches to the flat plan view; browsers without WebGL get the 2D view automatically. On phones and tablets the panel sits under the factory view: one finger pans, pinch zooms, and two-finger twist rotates the 3D view. Sound effects (synthesized, no downloads) can be muted or turned down with the speaker button. Keys: **Space** pause, **1/2/3** for 1×/2×/4× speed, **Esc** closes the station panel.
 
 ## Code layout
 

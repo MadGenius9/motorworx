@@ -1,11 +1,12 @@
-import type { ReactNode } from 'react';
-import { STATION_IDS } from '../config/balance';
-import { orderProgress, rivalOnPromo, type PanelTab } from '../sim/selectors';
+import { useState, type ReactNode } from 'react';
+import { BALANCE, STATION_IDS } from '../config/balance';
+import { activeIncidents, orderProgress, rivalOnPromo, type PanelTab } from '../sim/selectors';
 import type { GameState } from '../sim/types';
 import { EventTicker } from './EventTicker';
 import { FinancesTab } from './tabs/FinancesTab';
 import { MarketTab } from './tabs/MarketTab';
 import { ResearchTab } from './tabs/ResearchTab';
+import { GoalsTab } from './tabs/GoalsTab';
 import { OrdersTab } from './tabs/OrdersTab';
 import { StaffTab } from './tabs/StaffTab';
 import { SuppliersTab } from './tabs/SuppliersTab';
@@ -58,6 +59,12 @@ function badgesFor(state: GameState, tab: PanelTab): Badge[] {
     }
     case 'research':
       return state.research.active ? [{ n: 1, tone: 'accent', title: 'Research in progress' }] : [];
+    case 'goals': {
+      const n = activeIncidents(state).length;
+      return n ? [{ n, tone: 'warn', title: `${n} event(s) active` }] : [];
+    }
+    case 'staff':
+      return state.workforce.morale < BALANCE.workforce.strike.belowMorale + 8 ? [{ n: 1, tone: 'warn', title: 'Morale is low' }] : [];
     case 'finances':
       return state.cash < 0 ? [{ n: 1, tone: 'bad', title: 'Cash is negative' }] : [];
     default:
@@ -74,13 +81,27 @@ const TABS: { id: PanelTab; label: string; render: () => ReactNode }[] = [
   { id: 'finances', label: 'Finances', render: () => <FinancesTab /> },
   { id: 'research', label: 'R&D', render: () => <ResearchTab /> },
   { id: 'upgrades', label: 'Upgrades', render: () => <UpgradesTab /> },
+  { id: 'goals', label: 'Goals', render: () => <GoalsTab /> },
 ];
 
 export function SidePanel({ tab }: { tab: PanelTab }) {
   const { state, openTab } = useUi();
   const current = TABS.find((t) => t.id === tab) ?? TABS[0];
+  // Narrow screens: the panel sits under the factory view and can be expanded to cover it.
+  const [expanded, setExpanded] = useState(false);
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar${expanded ? ' is-expanded' : ''}`}>
+      <button
+        type="button"
+        className="sheet-toggle"
+        aria-expanded={expanded}
+        aria-label={expanded ? 'Show the factory view' : 'Expand the panel'}
+        onClick={() => setExpanded((e) => !e)}
+      >
+        <span className="sheet-grip" aria-hidden="true" />
+        <span className="small muted">{expanded ? 'Show factory ▾' : 'Expand panel ▴'}</span>
+      </button>
       <nav className="tabs" role="tablist">
         {TABS.map((t) => (
           <button

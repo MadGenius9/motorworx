@@ -108,6 +108,13 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
   const rendererRef = useRef<FactoryView | null>(null);
   const [mode, setMode] = useState<ViewMode>(initialMode);
   const [canWebgl] = useState(webglAvailable);
+  const [coarse] = useState(() => {
+    try {
+      return window.matchMedia('(pointer: coarse)').matches;
+    } catch {
+      return false;
+    }
+  });
   const propsRef = useRef(props);
   propsRef.current = props;
 
@@ -159,16 +166,17 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
     <div ref={containerRef} style={containerStyle} className="factory-canvas">
       {/* A fresh canvas per mode: a canvas can't switch between WebGL and 2D contexts. */}
       <canvas key={mode} ref={canvasRef} style={canvasStyle} aria-label="Factory floor view" />
-      <div style={controlsStyle}>
-        <button type="button" style={btnStyle} title="Zoom in" aria-label="Zoom in" onClick={() => rendererRef.current?.zoomBy(1.25)}>
+      <div style={controlsStyle} className="fc-controls">
+        <button type="button" style={btnStyle} className="fc-btn" title="Zoom in" aria-label="Zoom in" onClick={() => rendererRef.current?.zoomBy(1.25)}>
           +
         </button>
-        <button type="button" style={btnStyle} title="Zoom out" aria-label="Zoom out" onClick={() => rendererRef.current?.zoomBy(0.8)}>
+        <button type="button" style={btnStyle} className="fc-btn" title="Zoom out" aria-label="Zoom out" onClick={() => rendererRef.current?.zoomBy(0.8)}>
           −
         </button>
         <button
           type="button"
           style={{ ...btnStyle, fontSize: 13 }}
+          className="fc-btn"
           title="Fit whole factory"
           aria-label="Reset view"
           onClick={() => rendererRef.current?.resetView()}
@@ -179,6 +187,7 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
           <button
             type="button"
             style={{ ...btnStyle, fontSize: 11, fontWeight: 800 }}
+            className="fc-btn"
             title={mode === '3d' ? 'Switch to the flat 2D plan view' : 'Switch to the 3D view'}
             aria-label={mode === '3d' ? 'Switch to 2D view' : 'Switch to 3D view'}
             onClick={() => {
@@ -195,7 +204,11 @@ export function FactoryCanvas(props: FactoryCanvasProps) {
           </button>
         )}
       </div>
-      {mode === '3d' && <div style={hintStyle}>Drag to pan · right-drag to rotate · wheel to zoom</div>}
+      {mode === '3d' && (
+        <div style={hintStyle} className="fc-hint">
+          {coarse ? 'Drag to pan · pinch to zoom · twist to rotate' : 'Drag to pan · right-drag to rotate · wheel to zoom'}
+        </div>
+      )}
     </div>
   );
 }

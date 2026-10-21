@@ -5,8 +5,10 @@ import type { Command, CommandResult } from './sim/commandTypes';
 import type { AlertAction, PanelTab } from './sim/selectors';
 import type { StationId } from './sim/types';
 import { AlertBar } from './ui/AlertBar';
+import { Celebrations } from './ui/Celebrations';
 import { isTypingTarget } from './ui/format';
 import { GameOverModal } from './ui/GameOverModal';
+import { VictoryModal } from './ui/VictoryModal';
 import { PlantSwitcher } from './ui/PlantSwitcher';
 import { SidePanel } from './ui/SidePanel';
 import { StationPanel } from './ui/StationPanel';
@@ -29,6 +31,14 @@ export default function App({ controller }: { controller: IGameController }) {
     setSelected(null);
   }, []);
   const [toasts, setToasts] = useState<UiToast[]>([]);
+  // Show the victory screen once, when the goal is reached during play (not when loading a won game).
+  const [showVictory, setShowVictory] = useState(false);
+  const seenWin = useRef<{ state: unknown; wonAt: number | null }>({ state, wonAt: state.goals.wonAt });
+  useEffect(() => {
+    const prev = seenWin.current;
+    if (prev.state === state && prev.wonAt === null && state.goals.wonAt !== null) setShowVictory(true);
+    seenWin.current = { state, wonAt: state.goals.wonAt };
+  });
   const toastId = useRef(0);
 
   const notify = useCallback((text: string, ok: boolean) => {
@@ -131,7 +141,9 @@ export default function App({ controller }: { controller: IGameController }) {
           <SidePanel tab={tab} />
         </main>
         <Toasts controllerToast={visibleCtoast} local={toasts} />
+        <Celebrations />
         {state.gameOver && <GameOverModal />}
+        {showVictory && !state.gameOver && <VictoryModal onClose={() => setShowVictory(false)} />}
       </div>
     </UiContext.Provider>
   );

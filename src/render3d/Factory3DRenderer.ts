@@ -1,7 +1,8 @@
 /**
  * WebGL factory view (three.js). Builds a lit, shadowed 3D hall from the same floor-plan layout as the 2D view
  * (2D x → world x, 2D y → world z, y is up) and animates it from the game state every frame.
- * Never mutates game state. Camera: drag to pan, right-drag (or shift-drag) to orbit, wheel to zoom.
+ * Never mutates game state. Camera: drag to pan, right-drag (or shift-drag) to orbit, wheel to zoom;
+ * touch: one-finger drag pans, two-finger pinch zooms and twist rotates.
  */
 import * as THREE from 'three';
 import { BALANCE, COMPONENT_IDS, STATION_IDS } from '../config/balance';
@@ -166,6 +167,9 @@ export class Factory3DRenderer {
   private down: { x: number; y: number; button: number; shift: boolean } | null = null;
   private dragged = false;
   private last = { x: 0, y: 0 };
+  /** Active touch points (pointerId → client position) for pinch/twist gestures. */
+  private touches = new Map<number, { x: number; y: number }>();
+  private pinch: { cx: number; cy: number; d: number; a: number } | null = null;
 
   // Dynamic scene parts rebuilt with the layout.
   private conveyorTex: THREE.CanvasTexture | null = null;
@@ -205,6 +209,7 @@ export class Factory3DRenderer {
     canvas.addEventListener('pointerdown', this.onDown);
     canvas.addEventListener('pointermove', this.onMove);
     canvas.addEventListener('pointerup', this.onUp);
+    canvas.addEventListener('pointercancel', this.onCancel);
     canvas.addEventListener('pointerleave', this.onLeave);
     canvas.addEventListener('wheel', this.onWheel, { passive: false });
     canvas.addEventListener('contextmenu', this.onContext);
@@ -241,6 +246,7 @@ export class Factory3DRenderer {
     c.removeEventListener('pointerdown', this.onDown);
     c.removeEventListener('pointermove', this.onMove);
     c.removeEventListener('pointerup', this.onUp);
+    c.removeEventListener('pointercancel', this.onCancel);
     c.removeEventListener('pointerleave', this.onLeave);
     c.removeEventListener('wheel', this.onWheel);
     c.removeEventListener('contextmenu', this.onContext);
@@ -1218,19 +1224,77 @@ export class Factory3DRenderer {
     return { target: null, floor: hits.length > 0 };
   }
 
+  /** Pan the camera target by a screen-space drag of (dx, dy) CSS pixels. */
+  private panBy(dx: number, dy: number): void {
+    const scale = (2 * this.dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / this.cssH;
+    const right = new THREE.Vector3(Math.cos(this.az), 0, -Math.sin(this.az));
+    const fwd = new THREE.Vector3(-Math.sin(this.az), 0, -Math.cos(this.az));
+    this.target.addScaledVector(right, -dx * scale);
+    this.target.addScaledVector(fwd, (dy * scale) / Math.max(0.35, Math.sin(this.el)));
+    if (this.layout) {
+      const b = this.layout.bounds;
+      this.target.x = THREE.MathUtils.clamp(this.target.x, b.x - 200, b.x + b.w + 200);
+      this.target.z = THREE.MathUtils.clamp(this.target.z, b.y - 200, b.y + b.h + 200);
+    }
+  }
+
+  /** Two-finger gesture geometry: centre, finger spacing and angle. */
+  private pinchInfo(): { cx: number; cy: number; d: number; a: number } | null {
+    const pts = Array.from(this.touches.values());
+    if (pts.length < 2) return null;
+    const [p, q] = pts;
+    return { cx: (p.x + q.x) / 2, cy: (p.y + q.y) / 2, d: Math.max(1, Math.hypot(q.x - p.x, q.y - p.y)), a: Math.atan2(q.y - p.y, q.x - p.x) };
+  }
+
   private onDown = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch') {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (this.touches.size >= 2) {
+        // Second finger: switch from pan/tap to pinch-zoom (+ twist to rotate); no tap fires.
+        this.down = null;
+        this.dragged = true;
+        this.pinch = this.pinchInfo();
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    }
     this.down = { x: e.clientX, y: e.clientY, button: e.button, shift: e.shiftKey };
     this.last = { x: e.clientX, y: e.clientY };
     this.dragged = false;
-    this.canvas.setPointerCapture(e.pointerId);
+    try {
+      this.canvas.setPointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
   };
 
   private onMove = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) {
+      this.touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const prev = this.pinch;
+      if (prev && this.touches.size >= 2) {
+        const now = this.pinchInfo();
+        if (!now) return;
+        this.userMoved = true;
+        this.dist = THREE.MathUtils.clamp((this.dist * prev.d) / now.d, 250, 6000);
+        let da = now.a - prev.a;
+        if (da > Math.PI) da -= 2 * Math.PI;
+        else if (da < -Math.PI) da += 2 * Math.PI;
+        this.az = THREE.MathUtils.clamp(this.az + da, -1.1, 1.1);
+        this.panBy(now.cx - prev.cx, now.cy - prev.cy);
+        this.pinch = now;
+        return;
+      }
+    }
     if (this.down) {
       const dx = e.clientX - this.last.x;
       const dy = e.clientY - this.last.y;
       this.last = { x: e.clientX, y: e.clientY };
-      if (!this.dragged && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) < 5) return;
+      if (!this.dragged && Math.hypot(e.clientX - this.down.x, e.clientY - this.down.y) < (e.pointerType === 'touch' ? 8 : 5)) return;
       this.dragged = true;
       this.userMoved = true;
       if (this.down.button === 2 || this.down.shift) {
@@ -1238,33 +1302,33 @@ export class Factory3DRenderer {
         this.az = THREE.MathUtils.clamp(this.az, -1.1, 1.1);
         this.el = THREE.MathUtils.clamp(this.el + dy * 0.004, 0.3, 1.45);
       } else {
-        const scale = (2 * this.dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2)) / this.cssH;
-        const right = new THREE.Vector3(Math.cos(this.az), 0, -Math.sin(this.az));
-        const fwd = new THREE.Vector3(-Math.sin(this.az), 0, -Math.cos(this.az));
-        this.target.addScaledVector(right, -dx * scale);
-        this.target.addScaledVector(fwd, (dy * scale) / Math.max(0.35, Math.sin(this.el)));
-        if (this.layout) {
-          const b = this.layout.bounds;
-          this.target.x = THREE.MathUtils.clamp(this.target.x, b.x - 200, b.x + b.w + 200);
-          this.target.z = THREE.MathUtils.clamp(this.target.z, b.y - 200, b.y + b.h + 200);
-        }
+        this.panBy(dx, dy);
       }
       this.canvas.style.cursor = 'grabbing';
       return;
     }
+    if (e.pointerType === 'touch') return;
     const { target } = this.pick(e.clientX, e.clientY);
     this.hovered = target;
     this.canvas.style.cursor = target ? 'pointer' : 'grab';
   };
 
   private onUp = (e: PointerEvent): void => {
-    const d = this.down;
-    this.down = null;
+    const wasPinch = this.touches.size >= 2 || this.pinch !== null;
+    this.touches.delete(e.pointerId);
+    if (this.touches.size < 2) this.pinch = null;
     try {
       this.canvas.releasePointerCapture(e.pointerId);
     } catch {
       /* already released */
     }
+    if (wasPinch) {
+      // Lifting one finger of a pinch must not turn into a pan jump or a tap.
+      this.down = null;
+      return;
+    }
+    const d = this.down;
+    this.down = null;
     if (!d || this.dragged || d.button !== 0) {
       this.canvas.style.cursor = 'grab';
       return;
@@ -1275,7 +1339,14 @@ export class Factory3DRenderer {
     else this.callbacks.onOpenTab(target.tab);
   };
 
-  private onLeave = (): void => {
+  private onCancel = (e: PointerEvent): void => {
+    this.touches.delete(e.pointerId);
+    if (this.touches.size < 2) this.pinch = null;
+    this.down = null;
+  };
+
+  private onLeave = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch') return;
     if (!this.down) this.hovered = null;
   };
 
