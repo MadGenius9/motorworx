@@ -1,3 +1,4 @@
+import { rivalLaunchDay } from '../../sim/initialState';
 import { BALANCE, MODEL_IDS, TRIM_IDS, type ModelId, type TrimId } from '../../config/balance';
 import { recentMarketShare, rivalSpec, segmentShares, vehicleLabel } from '../../sim/selectors';
 import { Bar, Pill, Section, Swatch } from '../common';
@@ -120,8 +121,8 @@ export function MarketTab() {
         {state.market.rivals.map((r) => {
           const spec = rivalSpec(r.id);
           const lineup = MODEL_IDS.filter((m) => r.segments[m].economy.active).map((m) => BALANCE.models[m].className);
-          const upcoming = MODEL_IDS.filter((m) => !r.segments[m].economy.active && spec.launchDay[m] !== null).map(
-            (m) => `${BALANCE.models[m].className} (day ${spec.launchDay[m]})`,
+          const upcoming = MODEL_IDS.filter((m) => !r.segments[m].economy.active && rivalLaunchDay(state.goals.scenario, r.id, m) !== null).map(
+            (m) => `${BALANCE.models[m].className} (day ${rivalLaunchDay(state.goals.scenario, r.id, m)})`,
           );
           return (
             <div key={r.id} className="card">

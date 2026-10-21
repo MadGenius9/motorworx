@@ -4,7 +4,18 @@ import type { ComponentId, ModelId, StationId, TrimId } from '../src/config/bala
 import { applyCommand } from '../src/sim/commands';
 import type { Command, CommandResult } from '../src/sim/commandTypes';
 import { step } from '../src/sim/engine';
-import { orderProgress, projectedDailyCosts, queueCapacity } from '../src/sim/selectors';
+import {
+  buildPlantBlocker,
+  nextPlantSite,
+  orderProgress,
+  projectedDailyCosts,
+  queueCapacity,
+  researchStatus,
+  stationRequiredStaff,
+  unassignedFor,
+  unlockBlocker,
+  yardCapacity,
+} from '../src/sim/selectors';
 import type { GameState, LedgerCategory, SalesOrder, Vehicle } from '../src/sim/types';
 import type { StorageLike } from '../src/game/GameController';
 
@@ -208,7 +219,7 @@ export function checkInvariants(s: GameState): string[] {
   if (ops > s.staff.operator) errs.push(`assigned operators ${ops} > ${s.staff.operator}`);
   if (insp > s.staff.inspector) errs.push(`assigned inspectors ${insp} > ${s.staff.inspector}`);
   s.yard.forEach((v) => place(v, 'yard'));
-  const yardCap = BALANCE.start.yardCapacity + s.warehouseLevel * BALANCE.upgrades.warehouse.yardAdd;
+  const yardCap = yardCapacity(s);
   if (s.yard.length > yardCap) errs.push(`yard ${s.yard.length} > cap ${yardCap}`);
   for (const v of vehicles(s)) {
     const where = loc.get(v.id);
@@ -314,4 +325,41 @@ export function toV4Shape(save: Record<string, any>): Record<string, any> {
   for (const v of Object.values(out.vehicles) as Record<string, unknown>[]) delete v.plant;
   out.version = 4;
   return out;
+}
+
+/**
+ * A player who grows the business: everything competentBot does, plus staffing every operating plant,
+ * research, new models and new plants when cash allows. Call once per game hour.
+ */
+export function growthBot(s: GameState): void {
+  const plants = s.plants.filter((p) => p.constructionRemaining <= 0);
+  competentBot(s, 6 * plants.length);
+  for (const p of plants) {
+    for (const id of STATION_IDS) {
+      const need = stationRequiredStaff(s, id, p.id) - p.stations[id].assigned;
+      for (let i = 0; i < need; i++) {
+        if (unassignedFor(s, id) <= 0) {
+          const role = id === 'inspection' ? 'inspector' : 'operator';
+          if (!applyCommand(s, { type: 'hire', role, count: 1 }).ok) break;
+          if (role === 'inspector') continue; // auto-assigned
+        }
+        applyCommand(s, { type: 'assignOperator', station: id, delta: 1, plant: p.id });
+      }
+    }
+  }
+  if (s.staff.technician < plants.length) applyCommand(s, { type: 'hire', role: 'technician', count: 1 });
+  const reserve = projectedDailyCosts(s).total * 3 + 40_000;
+  if (!s.research.active) {
+    const avail = Object.entries(BALANCE.research.projects)
+      .filter(([id]) => researchStatus(s, id) === 'available')
+      .sort((a, b) => a[1].cost - b[1].cost);
+    if (avail.length && s.cash > avail[0][1].cost + reserve) applyCommand(s, { type: 'startResearch', project: avail[0][0] });
+  }
+  for (const m of ['suv', 'pickup'] as ModelId[]) {
+    if (!s.product.models[m].unlocked && !unlockBlocker(s, m) && s.cash > BALANCE.models[m].unlockCost + reserve) {
+      applyCommand(s, { type: 'unlockModel', model: m });
+    }
+  }
+  const site = nextPlantSite(s);
+  if (site && !buildPlantBlocker(s) && s.cash > site.cost + reserve + 60_000) applyCommand(s, { type: 'buildPlant' });
 }

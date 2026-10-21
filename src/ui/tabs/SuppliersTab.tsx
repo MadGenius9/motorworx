@@ -3,13 +3,18 @@ import { BALANCE, COMPONENT_IDS, TRIM_IDS, type ComponentId, type ModelId, type 
 import {
   avgQuality,
   avgUnitCost,
+  componentPriceMult,
   incomingUnits,
+  kitCost,
+  kitShortfall,
   stockOnHand,
+  supplierOnStrike,
+  supplierUnitPrice,
   unlockedModels,
   vehicleLabel,
   warehouseCapacity,
 } from '../../sim/selectors';
-import { ActionButton, Bar, Section } from '../common';
+import { ActionButton, Bar, Pill, Section } from '../common';
 import { componentName, componentsPerVehicle, formatDuration, formatMoney, formatTime, pct } from '../format';
 import { useUi } from '../useGame';
 
@@ -78,7 +83,9 @@ export function SuppliersTab() {
         </table>
       </Section>
 
-      <Section title="Purchase">
+      <KitSection />
+
+      <Section title="Purchase single components">
         <div className="form-grid">
           <label htmlFor="buy-component">Component</label>
           <select id="buy-component" className="input" value={component} onChange={(e) => setComponent(e.target.value as ComponentId)}>
@@ -146,9 +153,13 @@ export function SuppliersTab() {
 
         <div className="supplier-grid">
           {BALANCE.suppliers.map((sup) => {
-            const unit = Math.round(BALANCE.components[component].basePrice * sup.priceMult);
+            const unit = supplierUnitPrice(sup.id, component, state) ?? 0;
+            const spiked = componentPriceMult(state, component) > 1;
+            const strike = supplierOnStrike(state, sup.id);
             const total = qtyValid ? unit * qty : 0;
-            const reason = !qtyValid
+            const reason = strike
+              ? `On strike until ${formatTime(strike.until)}`
+              : !qtyValid
               ? 'Enter a valid quantity'
               : state.cash < total
                 ? `Not enough cash (need ${formatMoney(total)})`
@@ -159,11 +170,15 @@ export function SuppliersTab() {
               <div key={sup.id} className="card supplier">
                 <div className="card-head">
                   <b>{sup.name}</b>
+                  {strike && <Pill tone="bad">On strike</Pill>}
                 </div>
                 <div className="muted small">{sup.blurb}</div>
                 <div className="grid2 small">
                   <span className="muted">Price / unit</span>
-                  <span className="num">{formatMoney(unit)}</span>
+                  <span className={`num${spiked ? ' tone-bad' : ''}`} title={spiked ? 'Price spike in effect' : undefined}>
+                    {formatMoney(unit)}
+                    {spiked ? ' ▲' : ''}
+                  </span>
                   <span className="muted">Lead time</span>
                   <span className="num">{formatDuration(sup.leadMinutes)}</span>
                   <span className="muted">Quality</span>
@@ -218,5 +233,84 @@ export function SuppliersTab() {
         )}
       </Section>
     </div>
+  );
+}
+
+/** One click buys every missing part for N cars of a model/trim from the chosen supplier. */
+function KitSection() {
+  const { state, dispatch } = useUi();
+  const [variant, setVariant] = useState('sedan:economy');
+  const [carsText, setCarsText] = useState('3');
+  const [model, trim] = variant.split(':') as [ModelId, TrimId];
+  const cars = Math.floor(Number(carsText));
+  const carsValid = Number.isFinite(cars) && cars >= 1 && cars <= 99;
+  const kit = carsValid ? kitShortfall(state, model, trim, cars) : {};
+  const units = COMPONENT_IDS.reduce((n, c) => n + (kit[c] ?? 0), 0);
+  const free = warehouseCapacity(state) - stockOnHand(state) - incomingUnits(state);
+  return (
+    <Section title="Parts kit" right={<span className="muted small">Buys only what you don't have or haven't ordered</span>}>
+      <div className="qty-row small">
+        Parts for
+        <input
+          className="input input-num input-xs"
+          type="number"
+          min={1}
+          max={99}
+          value={carsText}
+          aria-label="Cars to build"
+          onChange={(e) => setCarsText(e.target.value)}
+        />
+        <select className="input" value={variant} aria-label="Kit model and trim" onChange={(e) => setVariant(e.target.value)}>
+          {unlockedModels(state).flatMap((m) =>
+            TRIM_IDS.map((t) => (
+              <option key={`${m}:${t}`} value={`${m}:${t}`}>
+                {vehicleLabel(state, m, t)}
+              </option>
+            )),
+          )}
+        </select>
+        cars
+      </div>
+      {!carsValid ? (
+        <p className="tone-bad small">Enter 1 to 99 cars.</p>
+      ) : units === 0 ? (
+        <p className="tone-good small">You already have or have ordered every part for these cars.</p>
+      ) : (
+        <>
+          <p className="small">
+            Missing:{' '}
+            {COMPONENT_IDS.filter((c) => kit[c])
+              .map((c) => `${kit[c]} × ${BALANCE.components[c].short}`)
+              .join(', ')}{' '}
+            <span className="muted">({units} units)</span>
+          </p>
+          <div className="btn-group kit-buttons">
+            {BALANCE.suppliers.map((sup) => {
+              const cost = kitCost(sup.id, kit, state);
+              const strike = supplierOnStrike(state, sup.id);
+              const reason = strike
+                ? `${sup.name} is on strike`
+                : state.cash < cost
+                  ? `Not enough cash (need ${formatMoney(cost)})`
+                  : units > free
+                    ? `Not enough warehouse space (${Math.max(0, free)} free)`
+                    : null;
+              return (
+                <ActionButton
+                  key={sup.id}
+                  small
+                  variant={sup.id === 'corvan' ? 'primary' : 'default'}
+                  disabledReason={reason}
+                  title={`${pct(sup.quality)} quality · arrives in ${formatDuration(sup.leadMinutes)}`}
+                  onClick={() => dispatch({ type: 'purchaseKit', supplierId: sup.id, model, trim, cars })}
+                >
+                  {sup.name.split(' ')[0]} · {formatMoney(cost)} · {formatDuration(sup.leadMinutes)}
+                </ActionButton>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </Section>
   );
 }

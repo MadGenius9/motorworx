@@ -1,5 +1,5 @@
 /** Every player action is a Command applied by sim/commands.ts `applyCommand(state, cmd)`. */
-import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from './types';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId, WageLevel } from './types';
 
 export type Command =
   // Orders
@@ -17,6 +17,8 @@ export type Command =
   | { type: 'cancelJob'; jobId: number }
   // Suppliers
   | { type: 'purchase'; supplierId: string; component: ComponentId; quantity: number }
+  /** Buys from one supplier every component still missing to build `cars` vehicles (net of stock and deliveries). */
+  | { type: 'purchaseKit'; supplierId: string; model: ModelId; trim: TrimId; cars: number }
   // Staff
   | { type: 'hire'; role: StaffRole; count: number }
   | { type: 'fire'; role: StaffRole }
@@ -31,12 +33,12 @@ export type Command =
   // Upgrades
   | { type: 'upgradeCapacity'; station: StationId; plant?: number }
   | { type: 'upgradeReliability'; station: StationId; plant?: number }
+  | { type: 'upgradeWarehouse' }
   // Plants
   /** Buys and starts building the next plant site. */
   | { type: 'buildPlant' }
   /** Allows or forbids a plant to start a model. At least one model must stay allowed. */
   | { type: 'setPlantModel'; plant: number; model: ModelId; allowed: boolean }
-  | { type: 'upgradeWarehouse' }
   // Product (per model)
   /** Buys the model's tooling (BALANCE.models[model].unlockCost) so it can be built and ordered. */
   | { type: 'unlockModel'; model: ModelId }
@@ -50,6 +52,15 @@ export type Command =
   | { type: 'startResearch'; project: string }
   /** Stops the active project. Progress and money are lost. */
   | { type: 'cancelResearch' }
+  // Loans
+  /** Takes BALANCE.loans.offers[offer]. */
+  | { type: 'takeLoan'; offer: number }
+  /** Pays off a loan's remaining balance now. */
+  | { type: 'repayLoan'; loanId: number }
+  // Workforce
+  | { type: 'setWage'; level: WageLevel }
+  /** Pays for the next training level of a role (one course at a time). */
+  | { type: 'startTraining'; role: StaffRole }
   // Tutorial
   | { type: 'dismissTutorial' }
   | { type: 'showTutorial' };

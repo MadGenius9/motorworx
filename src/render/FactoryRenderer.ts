@@ -20,6 +20,7 @@ import {
   staffFactor,
   stockOnHand,
   unlockedModels,
+  vehicleLabel,
   warehouseCapacity,
   yardCapacity,
 } from '../sim/selectors';
@@ -120,6 +121,9 @@ export class FactoryRenderer {
   private hover: HitTarget | null = null;
   private mouse: { x: number; y: number } | null = null;
   private drag: { sx: number; sy: number; camX: number; camY: number; moved: boolean; id: number } | null = null;
+  /** Active touch points (pointerId → canvas-local position) for pinch-zoom. */
+  private touches = new Map<number, { x: number; y: number }>();
+  private pinch: { cx: number; cy: number; d: number } | null = null;
 
   constructor(canvas: HTMLCanvasElement, controller: IGameController, callbacks: FactoryRendererCallbacks) {
     this.canvas = canvas;
@@ -271,7 +275,29 @@ export class FactoryRenderer {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   }
 
+  /** Two-finger gesture geometry (canvas-local): centre and finger spacing. */
+  private pinchInfo(): { cx: number; cy: number; d: number } | null {
+    const pts = Array.from(this.touches.values());
+    if (pts.length < 2) return null;
+    const [p, q] = pts;
+    return { cx: (p.x + q.x) / 2, cy: (p.y + q.y) / 2, d: Math.max(1, Math.hypot(q.x - p.x, q.y - p.y)) };
+  }
+
   private onPointerDown = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch') {
+      this.touches.set(e.pointerId, this.localPoint(e));
+      if (this.touches.size >= 2) {
+        // Second finger: pinch-zoom instead of pan/tap.
+        this.drag = null;
+        this.pinch = this.pinchInfo();
+        try {
+          this.canvas.setPointerCapture(e.pointerId);
+        } catch {
+          /* ignore */
+        }
+        return;
+      }
+    }
     if (e.button !== 0) return;
     const p = this.localPoint(e);
     this.drag = { sx: p.x, sy: p.y, camX: this.cam.x, camY: this.cam.y, moved: false, id: e.pointerId };
@@ -284,12 +310,26 @@ export class FactoryRenderer {
 
   private onPointerMove = (e: PointerEvent): void => {
     const p = this.localPoint(e);
-    this.mouse = p;
+    if (e.pointerType === 'touch' && this.touches.has(e.pointerId)) {
+      this.touches.set(e.pointerId, p);
+      const prev = this.pinch;
+      if (prev && this.touches.size >= 2) {
+        const now = this.pinchInfo();
+        if (!now) return;
+        this.cam.x -= (now.cx - prev.cx) / this.cam.zoom;
+        this.cam.y -= (now.cy - prev.cy) / this.cam.zoom;
+        this.zoomAt(now.cx, now.cy, now.d / prev.d);
+        this.pinch = now;
+        return;
+      }
+    } else {
+      this.mouse = p;
+    }
     const d = this.drag;
     if (d && d.id === e.pointerId) {
       const dx = p.x - d.sx;
       const dy = p.y - d.sy;
-      if (!d.moved && Math.hypot(dx, dy) >= CLICK_SLOP) d.moved = true;
+      if (!d.moved && Math.hypot(dx, dy) >= (e.pointerType === 'touch' ? 8 : CLICK_SLOP)) d.moved = true;
       if (d.moved) {
         this.cam.x = d.camX - dx / this.cam.zoom;
         this.cam.y = d.camY - dy / this.cam.zoom;
@@ -300,6 +340,18 @@ export class FactoryRenderer {
   };
 
   private onPointerUp = (e: PointerEvent): void => {
+    const wasPinch = this.touches.size >= 2 || this.pinch !== null;
+    this.touches.delete(e.pointerId);
+    if (this.touches.size < 2) this.pinch = null;
+    if (wasPinch) {
+      this.drag = null;
+      try {
+        this.canvas.releasePointerCapture(e.pointerId);
+      } catch {
+        /* ignore */
+      }
+      return;
+    }
     const d = this.drag;
     if (!d || d.id !== e.pointerId) return;
     this.drag = null;
@@ -309,18 +361,21 @@ export class FactoryRenderer {
       /* ignore */
     }
     const p = this.localPoint(e);
-    if (d.moved || Math.hypot(p.x - d.sx, p.y - d.sy) >= CLICK_SLOP) return;
+    if (d.moved || Math.hypot(p.x - d.sx, p.y - d.sy) >= (e.pointerType === 'touch' ? 8 : CLICK_SLOP)) return;
     const t = this.hitTest(p.x, p.y);
     if (!t) this.cb.onSelectStation(null);
     else if (t.kind === 'station') this.cb.onSelectStation(t.id);
     else this.cb.onOpenTab(t.tab);
   };
 
-  private onPointerCancel = (): void => {
+  private onPointerCancel = (e: PointerEvent): void => {
+    this.touches.delete(e.pointerId);
+    if (this.touches.size < 2) this.pinch = null;
     this.drag = null;
   };
 
-  private onPointerLeave = (): void => {
+  private onPointerLeave = (e: PointerEvent): void => {
+    if (e.pointerType === 'touch') return;
     if (!this.drag) this.mouse = null;
   };
 
@@ -621,7 +676,9 @@ export class FactoryRenderer {
     const ctx = this.ctx;
     const dk = layout.dock;
     const ships = [...state.shipments].sort((a, b) => a.arrivesAt - b.arrivesAt);
-    this.panel(dk.box, 'LOADING DOCK', { kind: 'tab', tab: 'suppliers' }, ships.length ? `${ships.length} inbound` : '');
+    const hidden = Math.max(0, ships.length - dk.lanes.length);
+    const label = ships.length ? `${ships.length} inbound${hidden ? ` · ${hidden} not shown` : ''}` : '';
+    this.panel(dk.box, 'LOADING DOCK', { kind: 'tab', tab: 'suppliers' }, label);
     // Dock doors on the right edge
     const doorX = dk.box.x + dk.box.w - 14;
     for (let i = 0; i < 4; i++) {
@@ -664,13 +721,6 @@ export class FactoryRenderer {
         baseline: 'middle',
       });
     });
-    if (ships.length > dk.lanes.length) {
-      text(ctx, `+${ships.length - dk.lanes.length} more`, dk.box.x + dk.box.w - 24, dk.box.y + 16, {
-        size: 10,
-        color: COLORS.accent,
-        align: 'right',
-      });
-    }
   }
 
   private drawPlan(state: GameState, layout: FactoryLayout): void {
@@ -702,8 +752,7 @@ export class FactoryRenderer {
         ctx.fillStyle = orderColor(job.orderId);
         ctx.fillRect(r.x, r.y, 3, r.h - 2);
       }
-      const trim = BALANCE.trims[job.trim].name;
-      text(ctx, `${i + 1}. ${trim} ×${job.quantity}`, r.x + 8, r.y + r.h / 2 - 1, {
+      text(ctx, `${i + 1}. ${vehicleLabel(state, job.model, job.trim)} ×${job.quantity}`, r.x + 8, r.y + r.h / 2 - 1, {
         size: 11,
         weight: 600,
         color: COLORS.text,

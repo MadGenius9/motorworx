@@ -5,6 +5,8 @@
 import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
 import { addReputation, logEvent, postCash } from './ledger';
 import { chance, pick, randInt, randRange } from './rng';
+import { checkGoals, eventsMidnight, expireIncidents, trainingTick } from './events';
+import { rivalLaunchDay } from './initialState';
 import {
   changeoverMinutes,
   componentName,
@@ -16,6 +18,13 @@ import {
   formatMoney,
   formatTime,
   hazardPerActiveMinute,
+  incidentDemandMult,
+  incidentOfferMult,
+  plantOnStrike,
+  scenarioSpec,
+  supplierOnStrike,
+  workforceDefectMult,
+  workSpeed,
   operatingPlants,
   plantOf,
   plantPrefix,
@@ -202,7 +211,7 @@ export function collectPayment(state: GameState, o: SalesOrder): void {
   o.status = 'paid';
   o.paidAt = state.time;
   state.stats.ordersPaid++;
-  logEvent(state, 'good', `${o.dealer} paid ${formatMoney(amount)} for order #${o.id}.`);
+  logEvent(state, 'good', `${o.dealer} paid ${formatMoney(amount)} for order #${o.id}.`, 'paid');
 }
 
 export function cancelOrder(state: GameState, o: SalesOrder): void {
@@ -270,8 +279,7 @@ export function deliverOrderNow(state: GameState, o: SalesOrder): string | null 
     lateDays > 0 ? 'warn' : 'good',
     `Delivered order #${o.id} to ${o.dealer}: invoice ${formatMoney(invoice)}${
       lateDays > 0 ? ` (${lateDays} day(s) late, penalty applied)` : ''
-    }${o.paymentTermsMinutes > 0 ? `, payment due ${formatTime(o.paymentDueAt)}` : ''}.`,
-  );
+    }${o.paymentTermsMinutes > 0 ? `, payment due ${formatTime(o.paymentDueAt)}` : ''}.`, 'delivered');
   if (o.paymentTermsMinutes <= 0) collectPayment(state, o);
   return null;
 }
@@ -298,7 +306,7 @@ function generateOffer(state: GameState): void {
   const open = state.orders.filter((o) => o.status === 'offered').length;
   if (open >= O.maxOpenOffers) return;
   const rep = state.reputation;
-  if (!chance(state, (O.baseChance + rep * O.chancePerReputation) * researchEffects(state).offerChanceMult)) return;
+  if (!chance(state, (O.baseChance + rep * O.chancePerReputation) * researchEffects(state).offerChanceMult * incidentOfferMult(state))) return;
   const model = pickModel(state);
   const trim = chance(state, O.premiumShareBase + rep * O.premiumSharePerRep) ? 'premium' : 'economy';
   const qty = randInt(state, O.minQty, O.maxQtyBase + Math.floor(rep / O.repPerExtraQty));
@@ -345,15 +353,14 @@ function generateOffer(state: GameState): void {
   logEvent(
     state,
     'info',
-    `New offer #${order.id}: ${dealer} wants ${qty} ${vehicleLabel(state, model, trim)} @ ${formatMoney(unitPrice)} (due ${formatTime(deadline)}, ${terms.label}).`,
-  );
+    `New offer #${order.id}: ${dealer} wants ${qty} ${vehicleLabel(state, model, trim)} @ ${formatMoney(unitPrice)} (due ${formatTime(deadline)}, ${terms.label}).`, 'offer');
 }
 
 /** A rival wins an offer the player has left waiting. Prefers rivals active in the segment. */
 function maybeLoseOffer(state: GameState, o: SalesOrder): boolean {
   const C = BALANCE.competition;
   if (!o.contested || state.time % 60 !== 0 || state.time - o.createdAt < C.offerSnipeAfterMinutes) return false;
-  if (!chance(state, C.offerSnipeChancePerHour)) return false;
+  if (!chance(state, C.offerSnipeChancePerHour * scenarioSpec(state).offerSnipeMult)) return false;
   const inSegment = state.market.rivals.filter((r) => r.segments[o.model][o.trim].active);
   const winner = pick(state, inSegment.length ? inSegment : state.market.rivals);
   o.status = 'lost';
@@ -532,7 +539,7 @@ function completeSlot(state: GameState, plant: number, id: StationId, st: Statio
     Q.baseDefect * fx.baseDefectMult +
     (1 - slot.componentQuality) * Q.componentWeight * fx.componentDefectMult +
     (1 - st.condition / 100) * Q.conditionWeight;
-  if (chance(state, p)) {
+  if (chance(state, p * workforceDefectMult(state))) {
     v.defect = true;
     v.defectNotes.push(stationName(id));
   }
@@ -547,8 +554,7 @@ function breakDown(state: GameState, plant: number, id: StationId, st: StationSt
     'bad',
     `${plantPrefix(state, plant)}${stationName(id)} broke down! Production there is stopped — repair costs ${formatMoney(R.cost)} and takes ${Math.round(
       R.minutes / 60,
-    )}h.`,
-  );
+    )}h.`, 'breakdown');
 }
 
 function tickStation(state: GameState, plant: number, id: StationId): void {
@@ -595,7 +601,11 @@ function tickStation(state: GameState, plant: number, id: StationId): void {
   // 2. Fill empty slots.
   const sf = staffFactor(state, id, plant);
   if (sf <= 0) {
-    addIssue(st.issues, { kind: 'staff', text: id === 'inspection' ? 'No inspectors on staff' : 'No operators assigned' });
+    const strike = plantOnStrike(state, plant);
+    addIssue(st.issues, {
+      kind: 'staff',
+      text: strike ? 'Workers on strike' : id === 'inspection' ? 'No inspectors on staff' : 'No operators assigned',
+    });
   } else {
     fillSlots(state, plant, id, st);
   }
@@ -605,10 +615,11 @@ function tickStation(state: GameState, plant: number, id: StationId): void {
   if (sf > 0) {
     const S = BALANCE.stations[id];
     const wear = S.wearPerActiveMinute * Math.pow(E.reliabilityWearMult, st.reliabilityLevel) * researchEffects(state).wearMult * sf;
+    const speed = sf * workSpeed(state, id);
     for (const slot of st.slots) {
       if (!slot || slot.done) continue;
       worked = true;
-      slot.progress += sf;
+      slot.progress += speed;
       st.condition = Math.max(0, st.condition - wear);
       st.energyAccrued += S.energyPerActiveHour / 60;
       st.activeMinutesTotal++;
@@ -682,7 +693,7 @@ function receiveShipments(state: GameState): void {
   if (state.shipments.length === 0) return;
   const keep = [];
   for (const s of state.shipments) {
-    if (s.arrivesAt <= state.time) {
+    if (s.arrivesAt <= state.time && !supplierOnStrike(state, s.supplierId)) {
       const inv = state.inventory[s.component];
       inv.qty += s.qty;
       inv.value += s.qty * s.unitCost;
@@ -714,7 +725,7 @@ function marketSales(state: GameState): void {
       }
       // Rivals sell their expected share of the segment this interval (the player competes only with stock on offer).
       const seg = segmentShares(state, model, trim, { playerPresent: !!v, finish: v?.finish });
-      const segmentUnits = (trimSpec(model, trim).baseDemandPerDay * C.marketSizeCompanies * M.checkEveryMinutes) / MPD;
+      const segmentUnits = (trimSpec(model, trim).baseDemandPerDay * C.marketSizeCompanies * incidentDemandMult(state) * M.checkEveryMinutes) / MPD;
       for (const r of seg.rivals) {
         if (r.share > 0) state.market.today.rivals[r.id] = (state.market.today.rivals[r.id] ?? 0) + segmentUnits * r.share;
       }
@@ -730,7 +741,7 @@ function marketSales(state: GameState): void {
       addReputation(state, M.repPerSale);
       state.stats.marketSold++;
       state.market.today.player++;
-      logEvent(state, 'good', `Sold ${v.serial} (${label}) on the open market for ${formatMoney(price)}.`);
+      logEvent(state, 'good', `Sold ${v.serial} (${label}) on the open market for ${formatMoney(price)}.`, 'sale');
       handleEscapedDefect(state, v);
     }
   }
@@ -746,7 +757,7 @@ function rivalsMidnight(state: GameState): void {
     if (!spec) continue;
     const activeSegs: [ModelId, (typeof TRIM_IDS)[number]][] = [];
     for (const m of MODEL_IDS) {
-      const launch = spec.launchDay[m];
+      const launch = rivalLaunchDay(state.goals.scenario, r.id, m);
       for (const t of TRIM_IDS) {
         const seg = r.segments[m][t];
         if (!seg.active && launch !== null && day >= launch) {
@@ -795,11 +806,12 @@ function researchTick(state: GameState): void {
   state.research.completed.push(a.id);
   state.research.active = null;
   const p = BALANCE.research.projects[a.id];
-  logEvent(state, 'good', `Research complete: ${p?.name ?? a.id}. ${p ? describeEffect(p.effect).join('; ') : ''}.`);
+  logEvent(state, 'good', `Research complete: ${p?.name ?? a.id}. ${p ? describeEffect(p.effect).join('; ') : ''}.`, 'research');
 }
 
 function midnight(state: GameState): void {
   rivalsMidnight(state);
+  eventsMidnight(state);
   const endedDay = dayOf(state.time - 1);
   const payroll = dailyPayroll(state);
   postCash(state, 'payroll', `Payroll — day ${endedDay}`, -payroll);
@@ -891,14 +903,16 @@ export function pruneHistory(state: GameState): void {
 export function step(state: GameState): void {
   if (state.gameOver) return;
   state.time += 1;
+  expireIncidents(state);
   receiveShipments(state);
   researchTick(state);
+  trainingTick(state);
   for (const p of state.plants) {
     if (p.constructionRemaining > 0) {
       p.constructionRemaining -= 1;
       if (p.constructionRemaining <= 0) {
         p.constructionRemaining = 0;
-        logEvent(state, 'good', `${p.name} plant is finished — staff its stations to start building.`);
+        logEvent(state, 'good', `${p.name} plant is finished — staff its stations to start building.`, 'plant');
       }
       continue;
     }
@@ -913,7 +927,10 @@ export function step(state: GameState): void {
   ordersTick(state);
   if (state.time % MPD === 0) midnight(state);
   insolvencyCheck(state);
-  if (state.time % 60 === 0) pruneHistory(state);
+  if (state.time % 60 === 0) {
+    checkGoals(state);
+    pruneHistory(state);
+  }
 }
 
 /** Run n ticks (stops early on game over). */

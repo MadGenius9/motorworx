@@ -5,7 +5,15 @@ import { applyCommand } from '../src/sim/commands';
 import { runTicks, step } from '../src/sim/engine';
 import { createInitialState } from '../src/sim/initialState';
 import { deserialize, serialize } from '../src/sim/save';
-import { detectionRate, getAlerts, ledgerReconciliation, projectedDailyCosts, stationOf } from '../src/sim/selectors';
+import {
+  detectionRate,
+  getAlerts,
+  ledgerReconciliation,
+  projectedDailyCosts,
+  stationOf,
+  warehouseCapacity,
+  yardCapacity,
+} from '../src/sim/selectors';
 import type { GameState } from '../src/sim/types';
 import { SAVE_VERSION } from '../src/sim/types';
 import fixtureV1 from './fixtures/save-v1.json';
@@ -156,6 +164,35 @@ describe('two plants producing', () => {
     const s = createInitialState();
     expect(applyCommand(s, { type: 'repair', station: 'paint', plant: 3 }).ok).toBe(false);
     expect(applyCommand(s, { type: 'assignOperator', station: 'paint', delta: 1, plant: -1 }).ok).toBe(false);
+  });
+});
+
+describe('shared storage and alerts', () => {
+  it('each operating plant adds warehouse and yard space; plants under construction do not', () => {
+    const s = established();
+    const wh = warehouseCapacity(s);
+    const yard = yardCapacity(s);
+    mustOk(s, { type: 'buildPlant' });
+    expect(warehouseCapacity(s)).toBe(wh);
+    expect(yardCapacity(s)).toBe(yard);
+    runTicks(s, BALANCE.plants.constructionMinutes);
+    expect(warehouseCapacity(s)).toBe(wh + BALANCE.plants.componentAddPerPlant);
+    expect(yardCapacity(s)).toBe(yard + BALANCE.plants.yardAddPerPlant);
+  });
+
+  it('several stations short of parts give one grouped alert', () => {
+    const s = established();
+    buildSecondPlant(s);
+    staffPlant(s, 1);
+    // Plan work but no steel: stamping at both plants waits for parts.
+    s.inventory.steel = { qty: 0, value: 0, qualitySum: 0 };
+    mustOk(s, { type: 'scheduleBuild', model: 'sedan', trim: 'economy', quantity: 4 });
+    step(s);
+    const parts = getAlerts(s).filter((a) => a.id.startsWith('materials'));
+    expect(parts).toHaveLength(1);
+    expect(parts[0].id).toBe('materials');
+    expect(parts[0].cause).toContain('Steel');
+    expect(parts[0].cause).toContain(BALANCE.plants.sites[1].name);
   });
 });
 

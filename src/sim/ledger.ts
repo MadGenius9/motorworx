@@ -2,7 +2,7 @@
  * Money and event-log helpers. EVERY cash change in the simulation goes through `postCash`.
  */
 import { BALANCE } from '../config/balance';
-import type { EventLogEntry, ExpenseCategory, GameState, LedgerCategory } from './types';
+import type { EventLogEntry, EventTag, ExpenseCategory, GameState, LedgerCategory } from './types';
 
 const EXPENSE_CATEGORIES: ReadonlySet<LedgerCategory> = new Set<LedgerCategory>([
   'payroll',
@@ -15,6 +15,7 @@ const EXPENSE_CATEGORIES: ReadonlySet<LedgerCategory> = new Set<LedgerCategory>(
   'severance',
   'penalty',
   'research',
+  'interest',
 ]);
 
 export function isExpenseCategory(c: LedgerCategory): c is ExpenseCategory {
@@ -54,8 +55,10 @@ export function postCash(state: GameState, category: LedgerCategory, description
 }
 
 /** Append an event-log entry (newest last); keeps at most BALANCE.events.maxLogEntries. */
-export function logEvent(state: GameState, kind: EventLogEntry['kind'], text: string): void {
-  state.events.push({ id: state.nextId++, time: state.time, kind, text });
+export function logEvent(state: GameState, kind: EventLogEntry['kind'], text: string, tag?: EventTag): void {
+  const e: EventLogEntry = { id: state.nextId++, time: state.time, kind, text };
+  if (tag) e.tag = tag;
+  state.events.push(e);
   const max = BALANCE.events.maxLogEntries;
   if (state.events.length > max) state.events.splice(0, state.events.length - max);
 }

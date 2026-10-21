@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { sound } from '../audio/sound';
 import { BALANCE } from '../config/balance';
 import type { SimSpeed } from '../game/types';
 import { yardCapacity } from '../sim/selectors';
 import type { GameState } from '../sim/types';
 import { Bar, ConfirmDialog } from './common';
 import { formatDuration, formatMoney, formatTime } from './format';
+import { NewGameDialog } from './NewGameDialog';
 import { useUi } from './useGame';
 
 const WIP_STAGES = new Set(['stamping', 'body', 'paint', 'final', 'inspection', 'rework']);
@@ -30,30 +32,89 @@ export function Wordmark() {
   );
 }
 
+function SpeakerIcon({ muted }: { muted: boolean }) {
+  return (
+    <svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true">
+      <path d="M3 7.5h3l4-3.5v12l-4-3.5H3z" fill="currentColor" />
+      {muted ? (
+        <path d="M13 7.5l4.5 5M17.5 7.5l-4.5 5" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+      ) : (
+        <>
+          <path d="M12.8 7.2a4 4 0 0 1 0 5.6" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+          <path d="M15 5a7 7 0 0 1 0 10" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" fill="none" />
+        </>
+      )}
+    </svg>
+  );
+}
+
+const subscribeSound = (fn: () => void) => sound.subscribe(fn);
+const soundSnapshot = () => `${sound.muted}|${sound.volume}`;
+
+/** Mute toggle + volume slider (slider hidden on narrow screens). Settings persist in localStorage. */
+function SoundControl() {
+  useSyncExternalStore(subscribeSound, soundSnapshot, soundSnapshot);
+  if (!sound.supported) return null;
+  const muted = sound.muted;
+  return (
+    <div className="tb-sound">
+      <button
+        type="button"
+        className={`btn btn-ghost icon-btn tb-sound-btn${muted ? ' is-muted' : ''}`}
+        aria-pressed={!muted}
+        aria-label={muted ? 'Sound off — turn sound on' : 'Sound on — mute'}
+        title={muted ? 'Sound off' : 'Sound on'}
+        onClick={() => {
+          sound.setMuted(!muted);
+          if (muted) sound.play('uiClick');
+        }}
+      >
+        <SpeakerIcon muted={muted} />
+      </button>
+      <input
+        type="range"
+        className="tb-volume"
+        min={0}
+        max={100}
+        step={5}
+        value={muted ? 0 : Math.round(sound.volume * 100)}
+        aria-label="Sound volume"
+        title="Volume"
+        onChange={(e) => sound.setVolume(Number(e.target.value) / 100)}
+        onPointerUp={() => sound.play('coinSoft')}
+      />
+    </div>
+  );
+}
+
 export function TopBar() {
   const { controller, state, dispatch } = useUi();
   const [confirmNew, setConfirmNew] = useState(false);
-  const [loadOpen, setLoadOpen] = useState(false);
+  const [openMenu, setOpenMenu] = useState<'load' | 'more' | null>(null);
+  const menuOpen = openMenu !== null;
   const [pendingLoad, setPendingLoad] = useState<{ key: string; label: string } | null>(null);
   const [slotsTick, setSlotsTick] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
+  const moreRef = useRef<HTMLDivElement>(null);
 
   // Refresh slot info periodically (autosaves happen in the controller).
   useEffect(() => {
     const id = window.setInterval(() => setSlotsTick((t) => t + 1), 10_000);
     return () => window.clearInterval(id);
   }, []);
-  const slots = useMemo(() => controller.listSaveSlots(), [controller, slotsTick, loadOpen]);
+  const slots = useMemo(() => controller.listSaveSlots(), [controller, slotsTick, menuOpen]);
   const usable = slots.filter((s) => s.time !== null);
 
   useEffect(() => {
-    if (!loadOpen) return;
-    const onDown = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setLoadOpen(false);
+    if (!menuOpen) return;
+    const onDown = (e: PointerEvent) => {
+      const t = e.target as Node;
+      if (menuRef.current?.contains(t) || moreRef.current?.contains(t)) return;
+      setOpenMenu(null);
     };
-    window.addEventListener('mousedown', onDown);
-    return () => window.removeEventListener('mousedown', onDown);
-  }, [loadOpen]);
+    window.addEventListener('pointerdown', onDown);
+    return () => window.removeEventListener('pointerdown', onDown);
+  }, [menuOpen]);
 
   const cashNeg = state.cash < 0;
   const graceLeft =
@@ -62,6 +123,36 @@ export function TopBar() {
       : null;
   const yardCap = yardCapacity(state);
   const paused = controller.paused;
+
+  const slotItems = (
+    <>
+      {slots.map((s) => (
+        <button
+          key={s.key}
+          type="button"
+          role="menuitem"
+          className="menu-item"
+          disabled={s.time === null}
+          onClick={() => {
+            setOpenMenu(null);
+            setPendingLoad({ key: s.key, label: s.label });
+          }}
+        >
+          <span>{s.label}</span>
+          <span className="muted num">
+            {s.time === null ? 'Empty' : formatTime(s.time)}
+            {s.savedAtIso && (
+              <small> · {new Date(s.savedAtIso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</small>
+            )}
+          </span>
+        </button>
+      ))}
+    </>
+  );
+  const doSave = () => {
+    controller.saveManual(); // controller shows the result toast
+    setSlotsTick((t) => t + 1);
+  };
 
   return (
     <header className="topbar">
@@ -110,9 +201,11 @@ export function TopBar() {
           className={`btn ${paused ? 'btn-primary' : 'btn-default'} btn-pause`}
           onClick={() => controller.togglePause()}
           title="Space"
+          aria-label={paused ? 'Resume' : 'Pause'}
           disabled={state.gameOver}
         >
-          {paused ? '▶ Resume' : '❚❚ Pause'}
+          {paused ? '▶' : '❚❚'}
+          <span className="btn-label"> {paused ? 'Resume' : 'Pause'}</span>
         </button>
         <div className="segmented" role="group" aria-label="Simulation speed">
           {BALANCE.time.speeds.map((s, i) => (
@@ -130,11 +223,13 @@ export function TopBar() {
         </div>
 
         <span className="tb-sep" />
+        <SoundControl />
+        <span className="tb-sep tb-wide" />
 
         {state.tutorial.dismissed && (
           <button
             type="button"
-            className="btn btn-ghost icon-btn"
+            className="btn btn-ghost icon-btn tb-wide"
             title="Show tutorial"
             aria-label="Show tutorial"
             onClick={() => dispatch({ type: 'showTutorial' })}
@@ -142,68 +237,91 @@ export function TopBar() {
             ?
           </button>
         )}
-        <button
-          type="button"
-          className="btn btn-default"
-          onClick={() => {
-            controller.saveManual(); // controller shows the result toast
-            setSlotsTick((t) => t + 1);
-          }}
-        >
+        <button type="button" className="btn btn-default tb-wide" onClick={doSave}>
           Save
         </button>
-        <div className="menu-wrap" ref={menuRef}>
+        <div className="menu-wrap tb-wide" ref={menuRef}>
           <button
             type="button"
             className="btn btn-default"
             disabled={usable.length === 0}
             title={usable.length === 0 ? 'No saved games yet' : 'Load a saved game'}
-            aria-expanded={loadOpen}
-            onClick={() => setLoadOpen((o) => !o)}
+            aria-expanded={openMenu === 'load'}
+            onClick={() => setOpenMenu((m) => (m === 'load' ? null : 'load'))}
           >
             Load ▾
           </button>
-          {loadOpen && (
+          {openMenu === 'load' && (
             <div className="menu" role="menu">
-              {slots.map((s) => (
-                <button
-                  key={s.key}
-                  type="button"
-                  role="menuitem"
-                  className="menu-item"
-                  disabled={s.time === null}
-                  onClick={() => {
-                    setLoadOpen(false);
-                    setPendingLoad({ key: s.key, label: s.label });
-                  }}
-                >
-                  <span>{s.label}</span>
-                  <span className="muted num">
-                    {s.time === null ? 'Empty' : formatTime(s.time)}
-                    {s.savedAtIso && (
-                      <small> · {new Date(s.savedAtIso).toLocaleString([], { dateStyle: 'short', timeStyle: 'short' })}</small>
-                    )}
-                  </span>
-                </button>
-              ))}
+              {slotItems}
             </div>
           )}
         </div>
-        <button type="button" className="btn btn-default" onClick={() => setConfirmNew(true)}>
+        <button type="button" className="btn btn-default tb-wide" onClick={() => setConfirmNew(true)}>
           New Game
         </button>
+        {/* Narrow screens: Save / Load / New Game / tutorial live in one overflow menu. */}
+        <div className="menu-wrap tb-narrow" ref={moreRef}>
+          <button
+            type="button"
+            className="btn btn-default icon-btn tb-more-btn"
+            aria-label="Game menu"
+            aria-haspopup="menu"
+            aria-expanded={openMenu === 'more'}
+            onClick={() => setOpenMenu((m) => (m === 'more' ? null : 'more'))}
+          >
+            ⋯
+          </button>
+          {openMenu === 'more' && (
+            <div className="menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  doSave();
+                }}
+              >
+                <span>Save game</span>
+              </button>
+              <button
+                type="button"
+                role="menuitem"
+                className="menu-item"
+                onClick={() => {
+                  setOpenMenu(null);
+                  setConfirmNew(true);
+                }}
+              >
+                <span>New game…</span>
+              </button>
+              {state.tutorial.dismissed && (
+                <button
+                  type="button"
+                  role="menuitem"
+                  className="menu-item"
+                  onClick={() => {
+                    setOpenMenu(null);
+                    dispatch({ type: 'showTutorial' });
+                  }}
+                >
+                  <span>Show tutorial</span>
+                </button>
+              )}
+              <div className="menu-label">Load</div>
+              {slotItems}
+            </div>
+          )}
+        </div>
       </div>
 
       {confirmNew && (
-        <ConfirmDialog
-          title="Start a new game?"
-          message={<p>Your current factory will be replaced by a fresh start. Save first if you want to keep it.</p>}
-          confirmLabel="Start new game"
-          danger
+        <NewGameDialog
           onCancel={() => setConfirmNew(false)}
-          onConfirm={() => {
+          onStart={(scenario) => {
             setConfirmNew(false);
-            controller.newGame();
+            controller.newGame(scenario);
           }}
         />
       )}

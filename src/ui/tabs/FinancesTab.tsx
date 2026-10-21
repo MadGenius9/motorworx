@@ -1,7 +1,14 @@
 import { useState } from 'react';
-import { TRIM_IDS } from '../../config/balance';
+import { BALANCE, TRIM_IDS } from '../../config/balance';
 import {
+  creditLimit,
+  dailyLoanPayments,
   estimatedProfitPerVehicle,
+  fixedAssets,
+  loanBlocker,
+  loanPayment,
+  netWorth,
+  totalDebt,
   financeSummary,
   inventoryValue,
   ledgerReconciliation,
@@ -12,7 +19,7 @@ import {
   vehicleLabel,
 } from '../../sim/selectors';
 import type { ExpenseCategory, LedgerCategory } from '../../sim/types';
-import { KV, Pill, Section } from '../common';
+import { ActionButton, KV, Pill, Section } from '../common';
 import { clockOf, dayOf, formatMoney } from '../format';
 import { useUi } from '../useGame';
 
@@ -23,10 +30,11 @@ const OPEX_LABEL: Record<ExpenseCategory, string> = {
   repair: 'Repairs',
   rework: 'Rework',
   warranty: 'Warranty claims',
-  hiring: 'Hiring fees',
+  hiring: 'Hiring & training',
   severance: 'Severance',
   penalty: 'Penalties',
   research: 'Research & development',
+  interest: 'Loan interest',
 };
 
 const LEDGER_CATS: LedgerCategory[] = [
@@ -43,12 +51,16 @@ const LEDGER_CATS: LedgerCategory[] = [
   'penalty',
   'upgrade',
   'research',
+  'interest',
+  'loan',
 ];
 
 const r = (n: number) => formatMoney(Math.round(n));
 
 export function FinancesTab() {
-  const { state } = useUi();
+  const { state, dispatch } = useUi();
+  const debt = totalDebt(state);
+  const credit = creditLimit(state);
   const [filter, setFilter] = useState<LedgerCategory | 'all'>('all');
   const [limit, setLimit] = useState(100);
   const fs = financeSummary(state);
@@ -80,7 +92,7 @@ export function FinancesTab() {
         <KV k="Materials purchased (to inventory)" v={r(fs.materialsPurchased)} />
       </Section>
 
-      <Section title="Assets & receivables">
+      <Section title="Assets & net worth">
         <KV k="Raw materials" v={r(inv.raw)} />
         <KV k="Incoming (paid, in transit)" v={r(inv.incoming)} />
         <KV k="Work in progress" v={r(inv.wip)} />
@@ -88,6 +100,9 @@ export function FinancesTab() {
         <KV k={<b>Inventory total</b>} v={r(inv.total)} />
         <KV k="Receivables (delivered, unpaid)" v={r(receivables(state))} />
         <KV k="Outstanding order value" v={r(outstandingOrderValue(state))} />
+        <KV k="Equipment, plants & tooling (at cost)" v={r(fixedAssets(state))} />
+        {debt > 0 && <KV k="Loans owed" v={r(-debt)} tone="bad" />}
+        <KV k={<b>Net worth</b>} v={r(netWorth(state))} tone={netWorth(state) >= 0 ? 'good' : 'bad'} />
       </Section>
 
       <Section title="Outlook" right={<Pill tone="info">Estimates</Pill>}>
@@ -107,7 +122,79 @@ export function FinancesTab() {
         <KV k="Projected payroll / day" v={r(proj.payroll)} />
         <KV k="Projected overhead / day" v={r(proj.overhead)} />
         <KV k="Projected energy / day" v={r(proj.energy)} />
-        <KV k={<b>Projected daily costs</b>} v={r(proj.total)} tone={proj.total > state.cash ? 'bad' : undefined} />
+        {state.loans.length > 0 && <KV k="Loan repayments / day" v={r(dailyLoanPayments(state))} />}
+        <KV
+          k={<b>Projected daily costs</b>}
+          v={r(proj.total + dailyLoanPayments(state))}
+          tone={proj.total + dailyLoanPayments(state) > state.cash ? 'bad' : undefined}
+        />
+      </Section>
+
+      <Section title="Loans" right={<span className="small num">Debt {r(debt)} · limit {r(credit)}</span>}>
+        <p className="small muted">
+          Borrow to get through a slow week or to build sooner. Repayments (interest + principal) are taken every midnight. Your
+          limit grows with reputation and each extra plant.
+        </p>
+        {state.loans.map((l) => {
+          const daysLeft = Math.ceil(l.balance / Math.max(1, l.dailyPayment - l.balance * l.dailyRate));
+          return (
+            <div key={l.id} className="card">
+              <div className="card-head">
+                <b>{l.name}</b>
+                <span className="small num">
+                  {r(l.balance)} of {r(l.principal)} left
+                </span>
+              </div>
+              <div className="small num muted">
+                {r(l.dailyPayment)}/day · {(l.dailyRate * 100).toFixed(1)}% a day · about {daysLeft} day{daysLeft === 1 ? '' : 's'} to go
+              </div>
+              <div className="card-foot">
+                <ActionButton
+                  small
+                  showReason
+                  disabledReason={state.cash < l.balance ? `Need ${r(l.balance)} in cash` : null}
+                  onClick={() => dispatch({ type: 'repayLoan', loanId: l.id })}
+                >
+                  Repay {r(l.balance)} now
+                </ActionButton>
+              </div>
+            </div>
+          );
+        })}
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Loan</th>
+              <th className="r">Amount</th>
+              <th className="r">Per day</th>
+              <th className="r">Total interest</th>
+              <th />
+            </tr>
+          </thead>
+          <tbody>
+            {BALANCE.loans.offers.map((o, i) => {
+              const pay = loanPayment(o.amount, o.dailyRate, o.days);
+              return (
+                <tr key={o.name}>
+                  <td>
+                    {o.name}
+                    <div className="small muted">
+                      {o.days} days at {(o.dailyRate * 100).toFixed(1)}%/day
+                    </div>
+                  </td>
+                  <td className="r num">{r(o.amount)}</td>
+                  <td className="r num">{r(pay)}</td>
+                  <td className="r num">{r(pay * o.days - o.amount)}</td>
+                  <td className="r">
+                    <ActionButton small variant="primary" disabledReason={loanBlocker(state, i)} onClick={() => dispatch({ type: 'takeLoan', offer: i })}>
+                      Borrow
+                    </ActionButton>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </Section>
 
       <Section title="Daily history">

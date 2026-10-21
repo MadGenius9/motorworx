@@ -2,7 +2,7 @@
  * Player commands. `applyCommand` validates, mutates state and returns a player-facing result.
  * Commands never advance time, so they work while paused.
  */
-import { BALANCE, COMPONENT_IDS, FINISH_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
+import { BALANCE, COMPONENT_IDS, FINISH_IDS, STATION_IDS, TRIM_IDS, WAGE_LEVELS } from '../config/balance';
 import type { Command, CommandResult } from './commandTypes';
 import { allocateReservations, deliverOrderNow } from './engine';
 import { newPlant } from './initialState';
@@ -27,6 +27,15 @@ import {
   researchBlocker,
   stationName,
   isModel,
+  kitCost,
+  loanBlocker,
+  loanPayment,
+  supplierOnStrike,
+  supplierUnitPrice,
+  technicianTimeMult,
+  trainingBlocker,
+  trainingCost,
+  kitShortfall,
   modelName,
   stockOnHand,
   trimSpec,
@@ -192,7 +201,8 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (!sup) return fail('Unknown supplier.');
       if (!COMPONENT_IDS.includes(cmd.component)) return fail('Unknown component.');
       if (!isPositiveInt(cmd.quantity, 999)) return fail('Quantity must be a whole number from 1 to 999.');
-      const unit = Math.round(BALANCE.components[cmd.component].basePrice * sup.priceMult);
+      if (supplierOnStrike(state, sup.id)) return fail(`${sup.name} is on strike and not taking orders. Try another supplier.`);
+      const unit = supplierUnitPrice(sup.id, cmd.component, state) ?? 0;
       const cost = unit * cmd.quantity;
       const cap = warehouseCapacity(state);
       const used = stockOnHand(state) + incomingUnits(state);
@@ -223,6 +233,32 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       return ok(`Ordered ${cmd.quantity} × ${componentName(cmd.component)} (${formatMoney(cost)}), arriving ${formatTime(state.time + sup.leadMinutes)}.`);
     }
 
+    case 'purchaseKit': {
+      const sup = BALANCE.suppliers.find((s) => s.id === cmd.supplierId);
+      if (!sup) return fail('Unknown supplier.');
+      if (!isModel(cmd.model) || !TRIM_IDS.includes(cmd.trim)) return fail('Unknown model or trim.');
+      if (!isPositiveInt(cmd.cars, 99)) return fail('Cars must be a whole number from 1 to 99.');
+      if (supplierOnStrike(state, sup.id)) return fail(`${sup.name} is on strike and not taking orders. Try another supplier.`);
+      const kit = kitShortfall(state, cmd.model, cmd.trim, cmd.cars);
+      const units = COMPONENT_IDS.reduce((n, c) => n + (kit[c] ?? 0), 0);
+      const label = `${cmd.cars} ${vehicleLabel(state, cmd.model, cmd.trim)}`;
+      if (units === 0) return fail(`You already have (or have ordered) every part for ${label}.`);
+      const cap = warehouseCapacity(state);
+      const used = stockOnHand(state) + incomingUnits(state);
+      if (used + units > cap) {
+        return fail(`Not enough warehouse space for ${units} units: ${used}/${cap} used, room for ${Math.max(0, cap - used)} more.`);
+      }
+      const cost = kitCost(sup.id, kit, state);
+      const noCash = needCash(state, cost, `parts for ${label}`);
+      if (noCash) return noCash;
+      // Validated as a whole above, so every component purchase below succeeds.
+      for (const c of COMPONENT_IDS) {
+        const q = kit[c];
+        if (q) applyCommand(state, { type: 'purchase', supplierId: sup.id, component: c, quantity: q });
+      }
+      return ok(`Ordered ${units} parts for ${label} from ${sup.name} (${formatMoney(cost)}), arriving ${formatTime(state.time + sup.leadMinutes)}.`);
+    }
+
     // ─────────────── Staff ───────────────
     case 'hire': {
       if (!ROLES.includes(cmd.role)) return fail('Unknown role.');
@@ -237,7 +273,7 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (cmd.role === 'inspector') autoAssignInspectors(state, cmd.count);
       return ok(
         `Hired ${cmd.count} ${cmd.count === 1 ? info.name.toLowerCase() : info.plural.toLowerCase()} (${formatMoney(cost)} fee, ${formatMoney(
-          info.dailyWage * cmd.count,
+          Math.round(info.dailyWage * cmd.count * BALANCE.workforce.wages[state.workforce.wage].payMult),
         )}/day wages).`,
       );
     }
@@ -256,13 +292,14 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       if (noCash) return noCash;
       postCash(state, 'severance', `Severance: ${info.name}`, -severance);
       state.staff[cmd.role] -= 1;
+      state.workforce.morale = Math.max(0, state.workforce.morale - BALANCE.workforce.firingMoraleHit);
       if (cmd.role === 'inspector' && unassignedInspectors(state) <= 0 && assignedInspectors(state) > state.staff.inspector) {
         // Take an inspector off the plant that has the most.
         const from = [...state.plants].sort((a, b) => b.stations.inspection.assigned - a.stations.inspection.assigned)[0];
         from.stations.inspection.assigned -= 1;
       }
       const note = cmd.role === 'inspector' && state.staff.inspector === 0 ? ' Inspection is now unstaffed — no cars can pass it.' : '';
-      return ok(`Dismissed one ${info.name.toLowerCase()} (severance ${formatMoney(severance)}).${note}`);
+      return ok(`Dismissed one ${info.name.toLowerCase()} (severance ${formatMoney(severance)}, morale −${BALANCE.workforce.firingMoraleHit}).${note}`);
     }
     case 'assignOperator': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
@@ -300,9 +337,10 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       const noCash = needCash(state, M.cost, 'maintenance');
       if (noCash) return noCash;
       postCash(state, 'maintenance', `Maintenance: ${sname}`, -M.cost);
-      st.service = { kind: 'maintenance', remaining: M.minutes, total: M.minutes, cost: M.cost };
-      logEvent(state, 'info', `Maintenance started on ${sname} (${Math.round(M.minutes / 60)}h).`);
-      return ok(`Maintenance started on ${sname} — production pauses there for ${M.minutes} minutes.`);
+      const mm = Math.max(1, Math.round(M.minutes * technicianTimeMult(state)));
+      st.service = { kind: 'maintenance', remaining: mm, total: mm, cost: M.cost };
+      logEvent(state, 'info', `Maintenance started on ${sname} (${Math.round(mm / 60)}h).`);
+      return ok(`Maintenance started on ${sname} — production pauses there for ${mm} minutes.`);
     }
     case 'repair': {
       if (!isStation(cmd.station)) return fail('Unknown station.');
@@ -317,9 +355,10 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
       const noCash = needCash(state, R.cost, 'the repair');
       if (noCash) return noCash;
       postCash(state, 'repair', `Repair: ${sname}`, -R.cost);
-      st.service = { kind: 'repair', remaining: R.minutes, total: R.minutes, cost: R.cost };
-      logEvent(state, 'info', `Repair started on ${sname} (${Math.round(R.minutes / 60)}h).`);
-      return ok(`Repair started on ${sname} — back in ${Math.round(R.minutes / 60)}h.`);
+      const rm = Math.max(1, Math.round(R.minutes * technicianTimeMult(state)));
+      st.service = { kind: 'repair', remaining: rm, total: rm, cost: R.cost };
+      logEvent(state, 'info', `Repair started on ${sname} (${Math.round(rm / 60)}h).`);
+      return ok(`Repair started on ${sname} — back in ${Math.round(rm / 60)}h.`);
     }
 
     // ─────────────── Upgrades ───────────────
@@ -475,6 +514,57 @@ export function applyCommand(state: GameState, cmd: Command): CommandResult {
     }
 
     // ─────────────── Tutorial ───────────────
+    // ─────────────── Loans ───────────────
+    case 'takeLoan': {
+      const offer = BALANCE.loans.offers[cmd.offer];
+      const blocked = loanBlocker(state, cmd.offer);
+      if (!offer || blocked) return fail(blocked ?? 'Unknown loan.');
+      const payment = loanPayment(offer.amount, offer.dailyRate, offer.days);
+      state.loans.push({
+        id: state.nextId++,
+        name: offer.name,
+        principal: offer.amount,
+        balance: offer.amount,
+        dailyRate: offer.dailyRate,
+        dailyPayment: payment,
+        takenAt: state.time,
+      });
+      postCash(state, 'loan', `Loan received: ${offer.name}`, offer.amount);
+      logEvent(state, 'info', `Took a ${offer.name.toLowerCase()} of ${formatMoney(offer.amount)}: ${formatMoney(payment)} a day for ${offer.days} days.`, 'loan');
+      return ok(`Received ${formatMoney(offer.amount)}. Repayments of ${formatMoney(payment)} are taken every midnight.`);
+    }
+    case 'repayLoan': {
+      const loan = state.loans.find((l) => l.id === cmd.loanId);
+      if (!loan) return fail('That loan no longer exists.');
+      const noCash = needCash(state, loan.balance, 'repaying the loan');
+      if (noCash) return noCash;
+      postCash(state, 'loan', `Early repayment: ${loan.name}`, -loan.balance);
+      state.loans = state.loans.filter((l) => l !== loan);
+      logEvent(state, 'good', `Repaid the ${loan.name.toLowerCase()} early.`, 'loan');
+      return ok(`${loan.name} repaid. No more interest on it.`);
+    }
+
+    // ─────────────── Workforce ───────────────
+    case 'setWage': {
+      if (!WAGE_LEVELS.includes(cmd.level)) return fail('Unknown wage level.');
+      if (state.workforce.wage === cmd.level) return fail('Wages are already at that level.');
+      state.workforce.wage = cmd.level;
+      const w = BALANCE.workforce.wages[cmd.level];
+      logEvent(state, 'info', `Wages set to ${w.label.toLowerCase()}. Morale will drift toward ${w.moraleTarget} over the next days.`);
+      return ok(`Wages: ${w.label}. Morale heads toward ${w.moraleTarget}.`);
+    }
+    case 'startTraining': {
+      if (!ROLES.includes(cmd.role)) return fail('Unknown role.');
+      const blocked = trainingBlocker(state, cmd.role);
+      if (blocked) return fail(blocked);
+      const cost = trainingCost(state, cmd.role)!;
+      const lvl = state.workforce.training[cmd.role];
+      const minutes = BALANCE.workforce.training.minutes[lvl];
+      postCash(state, 'hiring', `Training course: ${BALANCE.staff[cmd.role].plural} level ${lvl + 1}`, -cost);
+      state.workforce.course = { role: cmd.role, remaining: minutes, total: minutes };
+      return ok(`Training started: ${BALANCE.staff[cmd.role].plural} level ${lvl + 1}, ${Math.round(minutes / 60)}h.`);
+    }
+
     case 'dismissTutorial':
       state.tutorial.dismissed = true;
       return ok();
