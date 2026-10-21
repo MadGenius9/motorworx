@@ -1,3 +1,4 @@
+import type { ScenarioId } from '../config/balance';
 import type { Command, CommandResult } from '../sim/commandTypes';
 import type { GameState } from '../sim/types';
 
@@ -36,8 +37,8 @@ export interface IGameController {
   saveManual(): CommandResult;
   loadSlot(key: string): CommandResult;
   listSaveSlots(): SaveSlotInfo[];
-  /** Resets to a fresh game (UI must confirm before calling). */
-  newGame(): void;
+  /** Resets to a fresh game in a scenario (default 'standard'; UI must confirm before calling). */
+  newGame(scenario?: ScenarioId): void;
   /** Short-lived message for the UI (e.g. result of a command or save). */
   readonly toast: { id: number; text: string; ok: boolean } | null;
 }

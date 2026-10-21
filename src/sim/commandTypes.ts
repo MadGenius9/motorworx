@@ -1,5 +1,5 @@
 /** Every player action is a Command applied by sim/commands.ts `applyCommand(state, cmd)`. */
-import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from './types';
+import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId, WageLevel } from './types';
 
 export type Command =
   // Orders
@@ -52,6 +52,15 @@ export type Command =
   | { type: 'startResearch'; project: string }
   /** Stops the active project. Progress and money are lost. */
   | { type: 'cancelResearch' }
+  // Loans
+  /** Takes BALANCE.loans.offers[offer]. */
+  | { type: 'takeLoan'; offer: number }
+  /** Pays off a loan's remaining balance now. */
+  | { type: 'repayLoan'; loanId: number }
+  // Workforce
+  | { type: 'setWage'; level: WageLevel }
+  /** Pays for the next training level of a role (one course at a time). */
+  | { type: 'startTraining'; role: StaffRole }
   // Tutorial
   | { type: 'dismissTutorial' }
   | { type: 'showTutorial' };

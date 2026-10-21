@@ -9,6 +9,7 @@ import { applyCommand } from '../sim/commands';
 import type { Command, CommandResult } from '../sim/commandTypes';
 import { step } from '../sim/engine';
 import { createInitialState } from '../sim/initialState';
+import type { ScenarioId } from '../config/balance';
 import { deserialize, serialize } from '../sim/save';
 import type { GameState } from '../sim/types';
 import type { IGameController, SaveSlotInfo, SimSpeed } from './types';
@@ -375,8 +376,8 @@ export class GameController implements IGameController {
     });
   }
 
-  newGame(): void {
-    this.replaceState(createInitialState(this.seed));
+  newGame(scenario: ScenarioId = 'standard'): void {
+    this.replaceState(createInitialState(this.seed, scenario));
     this._paused = false;
     const err = this.writeSave(BALANCE.save.autosaveKey);
     this.showToast(err ? `New game started, but autosave failed: ${err}` : 'New game started.', !err);

@@ -21,6 +21,46 @@ export type FinishId = (typeof FINISH_IDS)[number];
 
 export type StaffRole = 'operator' | 'inspector' | 'technician';
 
+export const SCENARIO_IDS = ['standard', 'shoestring', 'crowded'] as const;
+export type ScenarioId = (typeof SCENARIO_IDS)[number];
+
+export const WAGE_LEVELS = ['low', 'standard', 'high'] as const;
+export type WageLevel = (typeof WAGE_LEVELS)[number];
+
+export type IncidentKind = 'supplierStrike' | 'priceSpike' | 'recession' | 'boom' | 'laborStrike' | 'recall';
+
+export interface ScenarioSpec {
+  name: string;
+  blurb: string;
+  cash: number;
+  reputation: number;
+  /** Added to every station's starting condition (negative = worn-out equipment). */
+  conditionAdd: number;
+  /** Added to every rival's starting reputation. */
+  rivalReputationAdd: number;
+  /** Rival model launch days are multiplied by this (0.5 = they launch twice as early). */
+  rivalLaunchMult: number;
+  /** Multiplies the chance a rival wins an offer left waiting. */
+  offerSnipeMult: number;
+  /** Multiplies the daily chance of a random event. */
+  incidentChanceMult: number;
+  goal: {
+    /** Net worth to reach (cash + stock + receivables + equipment at cost − debt). */
+    netWorth: number;
+    /** Open-market share over the last 7 days (0..1), or 0 for none. */
+    marketShare: number;
+    /** Days for a gold rating; silver up to 1.5×, bronze after that. */
+    parDays: number;
+  };
+}
+
+export interface MilestoneSpec {
+  name: string;
+  description: string;
+  /** Reputation awarded when reached. */
+  reputation: number;
+}
+
 export type Recipe = Partial<Record<StationId, Partial<Record<ComponentId, number>>>>;
 
 /** What a completed research project changes. Multipliers stack multiplicatively, additions add up. */
@@ -684,6 +724,121 @@ export const BALANCE = {
   },
 
   events: { maxLogEntries: 60 },
+
+  scenarios: {
+    standard: {
+      name: 'Standard start',
+      blurb: 'A small sedan plant with some money in the bank. Grow it into a company worth $5M.',
+      cash: 120_000,
+      reputation: 50,
+      conditionAdd: 0,
+      rivalReputationAdd: 0,
+      rivalLaunchMult: 1,
+      offerSnipeMult: 1,
+      incidentChanceMult: 1,
+      goal: { netWorth: 5_000_000, marketShare: 0, parDays: 36 },
+    },
+    shoestring: {
+      name: 'Shoestring',
+      blurb: 'Half the cash, worn-out machines and a shaky name. Reach a net worth of $3M.',
+      cash: 65_000,
+      reputation: 42,
+      conditionAdd: -12,
+      rivalReputationAdd: 0,
+      rivalLaunchMult: 1,
+      offerSnipeMult: 1,
+      incidentChanceMult: 1.2,
+      goal: { netWorth: 3_000_000, marketShare: 0, parDays: 34 },
+    },
+    crowded: {
+      name: 'Crowded market',
+      blurb: 'Rivals are better known, launch new models sooner and snap up offers faster. Win 25% of the open market and reach $3M.',
+      cash: 120_000,
+      reputation: 50,
+      conditionAdd: 0,
+      rivalReputationAdd: 8,
+      rivalLaunchMult: 0.5,
+      offerSnipeMult: 1.6,
+      incidentChanceMult: 1,
+      goal: { netWorth: 3_000_000, marketShare: 0.25, parDays: 40 },
+    },
+  } as Record<ScenarioId, ScenarioSpec>,
+
+  /** Checked every game hour, in this order. Each one is awarded once. */
+  milestones: {
+    firstDelivery: { name: 'First delivery', description: 'Deliver your first dealer order.', reputation: 1 },
+    tenBuilt: { name: 'Rolling', description: 'Build 10 cars.', reputation: 1 },
+    firstResearch: { name: 'Lab coats', description: 'Finish a research project.', reputation: 1 },
+    secondModel: { name: 'Line-up', description: 'Put a second model into production.', reputation: 2 },
+    onTime10: { name: 'Reliable partner', description: 'Deliver 10 orders on time.', reputation: 2 },
+    fiftyBuilt: { name: 'Production run', description: 'Build 50 cars.', reputation: 1 },
+    netWorth500k: { name: 'Half a million', description: 'Reach a net worth of $500,000.', reputation: 2 },
+    secondPlant: { name: 'Expansion', description: 'Open a second plant.', reputation: 2 },
+    reputation75: { name: 'Household name', description: 'Reach 75 reputation.', reputation: 0 },
+    allModels: { name: 'Full range', description: 'Build all three models.', reputation: 2 },
+    hundredBuilt: { name: 'Centurion', description: 'Build 100 cars.', reputation: 1 },
+    thirdPlant: { name: 'Industrial group', description: 'Run three plants.', reputation: 3 },
+  } as Record<string, MilestoneSpec>,
+
+  incidents: {
+    /** No random events before this game day. */
+    graceDays: 5,
+    /** Chance per midnight that a new event starts (scaled by the scenario). */
+    chancePerDay: 0.22,
+    /** Relative weights of the random kinds (labour strikes come from low morale instead). */
+    weights: { supplierStrike: 3, priceSpike: 3, recession: 2, boom: 2, recall: 2 } as Partial<Record<IncidentKind, number>>,
+    supplierStrikeDays: 2,
+    priceSpike: { days: 3, mult: 1.4 },
+    recession: { days: 4, demandMult: 0.7, offerMult: 0.75 },
+    boom: { days: 3, demandMult: 1.3, offerMult: 1.25 },
+    /** A recall needs recent defects that reached customers; each one in the window adds this much chance. */
+    recall: { windowDays: 5, chancePerEscape: 0.35, costPerCar: 1800, reputation: -4 },
+  },
+
+  loans: {
+    offers: [
+      { name: 'Short-term credit', amount: 50_000, days: 10, dailyRate: 0.004 },
+      { name: 'Expansion loan', amount: 150_000, days: 20, dailyRate: 0.005 },
+      { name: 'Capital loan', amount: 400_000, days: 30, dailyRate: 0.006 },
+    ],
+    /** Credit limit = base + reputation × perReputation + operating plants beyond the first × perPlant. */
+    creditBase: 20_000,
+    creditPerReputation: 3_000,
+    creditPerPlant: 150_000,
+    maxLoans: 3,
+  },
+
+  workforce: {
+    wages: {
+      low: { label: 'Low (−15%)', payMult: 0.85, moraleTarget: 24 },
+      standard: { label: 'Standard', payMult: 1, moraleTarget: 62 },
+      high: { label: 'High (+20%)', payMult: 1.2, moraleTarget: 84 },
+    } as Record<WageLevel, { label: string; payMult: number; moraleTarget: number }>,
+    moraleStart: 62,
+    /** Share of the gap to the target closed each midnight. */
+    moraleDailyPull: 0.3,
+    /** Morale lost by everyone when a worker is dismissed. */
+    firingMoraleHit: 3,
+    /** Morale gained when a training course finishes. */
+    trainingMoraleBoost: 5,
+    /** Work speed at morale 0 and 100 (1.0 at 50). */
+    speedAtZero: 0.85,
+    speedAtFull: 1.06,
+    /** Below 50 morale, defects rise by up to this share at morale 0. */
+    defectAtZero: 0.5,
+    strike: { belowMorale: 30, chancePerDay: 0.35, minutes: 10 * 60, moraleAfter: 8 },
+    training: {
+      maxLevel: 3,
+      /** Course cost = base[level] + perHead × staff in the role. */
+      baseCost: [6_000, 12_000, 20_000],
+      perHead: 400,
+      minutes: [8 * 60, 12 * 60, 16 * 60],
+      operatorSpeedPerLevel: 0.04,
+      operatorDefectMultPerLevel: 0.88,
+      inspectorDetectionPerLevel: 0.04,
+      technicianTimeMultPerLevel: 0.85,
+    },
+  },
 };
 
 export type Balance = typeof BALANCE;

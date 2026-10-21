@@ -2,15 +2,15 @@
  * Simulation state. Everything here is plain JSON so it can be saved/loaded directly.
  * The simulation (src/sim) owns and mutates this; rendering and UI only read it.
  */
-import type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId } from '../config/balance';
+import type { ComponentId, FinishId, IncidentKind, ModelId, ScenarioId, StaffRole, StationId, TrimId, WageLevel } from '../config/balance';
 
-export type { ComponentId, FinishId, ModelId, StaffRole, StationId, TrimId };
+export type { ComponentId, FinishId, IncidentKind, ModelId, ScenarioId, StaffRole, StationId, TrimId, WageLevel };
 
 /**
  * Bump when the saved shape changes; add a migration in save.ts.
- * v2 vehicle models, v3 rivals, v4 research, v5 multiple plants.
+ * v2 vehicle models, v3 rivals, v4 research, v5 multiple plants, v6 goals/events/loans/workforce.
  */
-export const SAVE_VERSION = 5;
+export const SAVE_VERSION = 6;
 
 /** Where a vehicle physically is. Station ids mean "in that station's queue or a work slot". */
 export type VehicleStage = StationId | 'rework' | 'finished' | 'delivered' | 'sold';
@@ -213,7 +213,10 @@ export type LedgerCategory =
   | 'severance'
   | 'penalty'
   | 'upgrade'
-  | 'research';
+  | 'research'
+  | 'interest'
+  /** Loan money received (+) and principal repaid (−). Financing, not revenue or expense. */
+  | 'loan';
 
 export interface LedgerEntry {
   id: number;
@@ -236,7 +239,8 @@ export type ExpenseCategory =
   | 'hiring'
   | 'severance'
   | 'penalty'
-  | 'research';
+  | 'research'
+  | 'interest';
 
 export interface DailySummary {
   day: number;
@@ -266,11 +270,27 @@ export interface FinanceState {
   history: DailySummary[];
 }
 
+/** What an event was about, for sounds and celebrations. Untagged events are routine. */
+export type EventTag =
+  | 'offer'
+  | 'delivered'
+  | 'paid'
+  | 'sale'
+  | 'breakdown'
+  | 'research'
+  | 'plant'
+  | 'milestone'
+  | 'victory'
+  | 'incident'
+  | 'strike'
+  | 'loan';
+
 export interface EventLogEntry {
   id: number;
   time: number;
   kind: 'info' | 'good' | 'warn' | 'bad';
   text: string;
+  tag?: EventTag;
 }
 
 /** Player settings for one vehicle model. */
@@ -325,6 +345,49 @@ export interface ResearchState {
   active: { id: string; remaining: number; total: number } | null;
 }
 
+export interface GoalsState {
+  scenario: ScenarioId;
+  /** Milestone id → time reached. */
+  completed: Record<string, number>;
+  /** Time the scenario goal was reached, or null. The game carries on afterwards. */
+  wonAt: number | null;
+}
+
+/** A random (or morale-driven) event with a duration. Recalls are instant and never stored. */
+export interface Incident {
+  id: number;
+  kind: Exclude<IncidentKind, 'recall'>;
+  startedAt: number;
+  until: number;
+  /** supplierStrike */
+  supplierId?: string;
+  /** priceSpike */
+  component?: ComponentId;
+  /** laborStrike */
+  plant?: number;
+}
+
+export interface Loan {
+  id: number;
+  name: string;
+  principal: number;
+  /** Principal still owed. */
+  balance: number;
+  dailyRate: number;
+  /** Fixed daily instalment (interest + principal), taken at midnight. */
+  dailyPayment: number;
+  takenAt: number;
+}
+
+export interface WorkforceState {
+  wage: WageLevel;
+  /** 0..100 */
+  morale: number;
+  /** Training level per role (0..BALANCE.workforce.training.maxLevel). */
+  training: Record<StaffRole, number>;
+  course: { role: StaffRole; remaining: number; total: number } | null;
+}
+
 export interface GameStats {
   vehiclesStarted: number;
   vehiclesBuilt: number;
@@ -364,6 +427,10 @@ export interface GameState {
   orders: SalesOrder[];
   market: MarketState;
   research: ResearchState;
+  goals: GoalsState;
+  incidents: Incident[];
+  loans: Loan[];
+  workforce: WorkforceState;
   plan: ProductionJob[];
   staff: Record<StaffRole, number>;
   finance: FinanceState;

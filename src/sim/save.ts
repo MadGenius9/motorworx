@@ -1,5 +1,6 @@
 import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
-import { createMarket, defaultModelConfig } from './initialState';
+import { checkGoals } from './events';
+import { createMarket, defaultModelConfig, newWorkforce } from './initialState';
 import type { GameState, ModelConfig, ModelId } from './types';
 import { SAVE_VERSION } from './types';
 
@@ -85,6 +86,19 @@ function migrateV4(data: Record<string, unknown>): void {
   data.version = 5;
 }
 
+/**
+ * v5 → v6: goals, random events, loans and the workforce. Old games play the standard scenario; milestones
+ * already reached are recorded quietly after loading.
+ */
+function migrateV5(data: Record<string, unknown>): void {
+  data.goals = { scenario: 'standard', completed: {}, wonAt: null, catchUp: true };
+  data.incidents = [];
+  data.loans = [];
+  data.workforce = newWorkforce();
+  if (isObj(data.finance) && isObj(data.finance.opex)) data.finance.opex.interest = 0;
+  data.version = 6;
+}
+
 /** Parse and validate a saved game. Throws an Error with a readable message on bad data. */
 export function deserialize(json: string): GameState {
   if (typeof json !== 'string' || json.trim() === '') throw new Error('The save is empty.');
@@ -104,6 +118,7 @@ export function deserialize(json: string): GameState {
     data.version = 4;
   }
   if (data.version === 4) migrateV4(data);
+  if (data.version === 5) migrateV5(data);
   if (data.version !== SAVE_VERSION) {
     throw new Error(
       `This save was made by an incompatible version of MotorWorx (save version ${String(
@@ -125,6 +140,10 @@ export function deserialize(json: string): GameState {
     if (!isObj(models) || MODEL_IDS.some((m) => !isObj(models[m]))) problems.push('product.models');
   }
   if (!Array.isArray(data.plants) || data.plants.length === 0) problems.push('plants');
+  if (!isObj(data.goals) || !isObj(data.goals.completed) || !(typeof data.goals.scenario === 'string' && data.goals.scenario in BALANCE.scenarios)) problems.push('goals');
+  if (!Array.isArray(data.incidents)) problems.push('incidents');
+  if (!Array.isArray(data.loans)) problems.push('loans');
+  if (!isObj(data.workforce) || !isNum(data.workforce.morale) || !isObj(data.workforce.training)) problems.push('workforce');
   for (const k of ['product', 'inventory', 'vehicles', 'staff', 'finance', 'stats', 'tutorial']) {
     if (!isObj(data[k])) problems.push(k);
   }
@@ -159,5 +178,10 @@ export function deserialize(json: string): GameState {
   if (typeof state.gameOver !== 'boolean') state.gameOver = false;
   if (state.gameOverReason === undefined) state.gameOverReason = null;
   if (state.insolventSince === undefined) state.insolventSince = null;
+  const goals = state.goals as typeof state.goals & { catchUp?: boolean };
+  if (goals.catchUp) {
+    delete goals.catchUp;
+    checkGoals(state, true);
+  }
   return state;
 }

@@ -1,4 +1,5 @@
 import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS, TRIM_IDS } from '../config/balance';
+import type { ScenarioId } from '../config/balance';
 import { normaliseSeed } from './rng';
 import type {
   ComponentId,
@@ -14,6 +15,7 @@ import type {
   SalesOrder,
   StationId,
   StationState,
+  WorkforceState,
 } from './types';
 import { SAVE_VERSION } from './types';
 
@@ -28,6 +30,7 @@ const EXPENSES: ExpenseCategory[] = [
   'severance',
   'penalty',
   'research',
+  'interest',
 ];
 
 function makeStation(id: StationId, condition: number, assigned: number): StationState {
@@ -53,12 +56,13 @@ function makeStation(id: StationId, condition: number, assigned: number): Statio
  * A plant with one slot per station. The starting plant uses BALANCE.start conditions and staffing;
  * new plants get fresh equipment, no staff, and a construction countdown.
  */
-export function newPlant(id: number, name: string, constructionMinutes: number): PlantState {
+export function newPlant(id: number, name: string, constructionMinutes: number, conditionAdd = 0): PlantState {
   const first = id === 0;
   const stations = {} as Record<StationId, StationState>;
   for (const st of STATION_IDS) {
     const assigned = first ? (st === 'inspection' ? BALANCE.start.staff.inspector : BALANCE.start.assignments[st]) : 0;
-    stations[st] = makeStation(st, first ? BALANCE.start.stationCondition[st] : BALANCE.plants.newCondition, assigned);
+    const condition = first ? Math.max(20, Math.min(100, BALANCE.start.stationCondition[st] + conditionAdd)) : BALANCE.plants.newCondition;
+    stations[st] = makeStation(st, condition, assigned);
   }
   return {
     id,
@@ -67,6 +71,15 @@ export function newPlant(id: number, name: string, constructionMinutes: number):
     rework: { queue: [], slot: null, issues: [] },
     allowedModels: [...MODEL_IDS],
     constructionRemaining: constructionMinutes,
+  };
+}
+
+export function newWorkforce(): WorkforceState {
+  return {
+    wage: 'standard',
+    morale: BALANCE.workforce.moraleStart,
+    training: { operator: 0, inspector: 0, technician: 0 },
+    course: null,
   };
 }
 
@@ -89,28 +102,36 @@ export function defaultModelConfig(m: ModelId, unlocked: boolean): ModelConfig {
   };
 }
 
+/** Game day a rival launches a model in a scenario (null = never). */
+export function rivalLaunchDay(scenario: ScenarioId, rivalId: string, m: ModelId): number | null {
+  const spec = BALANCE.competition.rivals.find((r) => r.id === rivalId);
+  const d = spec?.launchDay[m] ?? null;
+  return d === null ? null : Math.round(d * BALANCE.scenarios[scenario].rivalLaunchMult);
+}
+
 /** Rivals at their starting positions; segments whose launch day has arrived by `time` are active. */
-export function createMarket(time: number): MarketState {
+export function createMarket(time: number, scenario: ScenarioId = 'standard'): MarketState {
   const day = Math.floor(time / BALANCE.time.minutesPerDay) + 1;
   const rivals: RivalState[] = BALANCE.competition.rivals.map((spec) => {
     const segments = {} as RivalState['segments'];
     for (const m of MODEL_IDS) {
-      const launch = spec.launchDay[m];
+      const launch = rivalLaunchDay(scenario, spec.id, m);
       const bySeg = {} as Record<(typeof TRIM_IDS)[number], RivalSegment>;
       for (const t of TRIM_IDS) {
         bySeg[t] = { active: launch !== null && launch <= day, priceIndex: spec.priceIndex, promoUntil: null };
       }
       segments[m] = bySeg;
     }
-    return { id: spec.id, reputation: spec.reputation, segments };
+    return { id: spec.id, reputation: spec.reputation + BALANCE.scenarios[scenario].rivalReputationAdd, segments };
   });
   const empty = () => Object.fromEntries(BALANCE.competition.rivals.map((r) => [r.id, 0]));
   return { rivals, today: { day, player: 0, rivals: empty() }, history: [] };
 }
 
-/** Fresh game state built entirely from BALANCE.start. */
-export function createInitialState(seed: number = BALANCE.start.seed): GameState {
+/** Fresh game state built from BALANCE.start and the scenario's adjustments. */
+export function createInitialState(seed: number = BALANCE.start.seed, scenario: ScenarioId = 'standard'): GameState {
   const S = BALANCE.start;
+  const SC = BALANCE.scenarios[scenario] ?? BALANCE.scenarios.standard;
   const time = BALANCE.time.startMinute;
   let nextId = 1;
 
@@ -166,22 +187,26 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     time,
     rng: normaliseSeed(seed),
     nextId,
-    cash: S.cash,
-    reputation: S.reputation,
+    cash: SC.cash,
+    reputation: SC.reputation,
     product: { models },
     inventory,
     shipments: [],
     warehouseLevel: 0,
-    plants: [newPlant(0, BALANCE.plants.sites[0].name, 0)],
+    plants: [newPlant(0, BALANCE.plants.sites[0].name, 0, SC.conditionAdd)],
     vehicles: {},
     yard: [],
     orders: [firstOrder],
-    market: createMarket(time),
+    market: createMarket(time, scenario),
     research: { completed: [], active: null },
+    goals: { scenario, completed: {}, wonAt: null },
+    incidents: [],
+    loans: [],
+    workforce: newWorkforce(),
     plan: [],
     staff: { ...S.staff },
     finance: {
-      startingCash: S.cash,
+      startingCash: SC.cash,
       revenue: 0,
       cogs: 0,
       opex,
@@ -189,7 +214,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
       materialsPurchased: 0,
       ledger: [],
       ledgerCarriedForward: 0,
-      today: { day, revenue: 0, cogs: 0, expenses: 0, cashEnd: S.cash, built: 0 },
+      today: { day, revenue: 0, cogs: 0, expenses: 0, cashEnd: SC.cash, built: 0 },
       history: [],
     },
     stats: {
@@ -219,7 +244,7 @@ export function createInitialState(seed: number = BALANCE.start.seed): GameState
     id: state.nextId++,
     time,
     kind: 'info',
-    text: `Welcome to MotorWorx! You've taken over a small ${BALANCE.models[fo.model].defaultName} plant with $${S.cash.toLocaleString(
+    text: `Welcome to MotorWorx (${SC.name})! You've taken over a small ${BALANCE.models[fo.model].defaultName} plant with $${SC.cash.toLocaleString(
       'en-US',
     )} in the bank. ${fo.dealer} wants ${fo.quantity} ${BALANCE.trims[fo.trim].name} ${BALANCE.models[fo.model].defaultName}s — check the Orders tab.`,
   });

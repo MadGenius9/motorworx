@@ -2,12 +2,13 @@
  * Read-only helpers used by the UI and renderer. All functions are pure (never mutate state).
  */
 import { BALANCE, COMPONENT_IDS, MODEL_IDS, STATION_IDS } from '../config/balance';
-import type { ResearchEffect, TrimSpec } from '../config/balance';
+import type { ComponentId as CId, ResearchEffect, ScenarioSpec, StaffRole, TrimSpec } from '../config/balance';
 import type { Command } from './commandTypes';
 import type {
   ComponentId,
   FinishId,
   GameState,
+  Incident,
   ModelId,
   PlantState,
   RivalState,
@@ -19,7 +20,7 @@ import type {
   VehicleStage,
 } from './types';
 
-export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'research' | 'upgrades';
+export type PanelTab = 'orders' | 'vehicles' | 'market' | 'suppliers' | 'staff' | 'finances' | 'research' | 'upgrades' | 'goals';
 export type StationStatus = 'running' | 'idle' | 'blocked' | 'understaffed' | 'broken' | 'repair' | 'maintenance';
 export type AlertAction =
   | { kind: 'openTab'; tab: PanelTab }
@@ -293,6 +294,7 @@ export function stationRequiredStaff(state: GameState, id: StationId, plant = 0)
 }
 
 export function staffFactor(state: GameState, id: StationId, plant = 0): number {
+  if (plantOnStrike(state, plant)) return 0;
   const req = stationRequiredStaff(state, id, plant);
   if (req <= 0) return 0;
   return Math.max(0, Math.min(1, stationStaff(state, id, plant) / req));
@@ -392,7 +394,8 @@ export function detectionRate(state: GameState, plant = 0): number {
   const n = stationOf(state, 'inspection', plant).assigned;
   if (n <= 0) return 0;
   const Q = BALANCE.quality;
-  return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1) + researchEffects(state).detectionAdd);
+  const trained = (state.workforce?.training.inspector ?? 0) * BALANCE.workforce.training.inspectorDetectionPerLevel;
+  return Math.min(Q.detectionMax, Q.detectionBase + Q.detectionPerInspector * (n - 1) + researchEffects(state).detectionAdd + trained);
 }
 
 // ───────────────────────────── staff ─────────────────────────────
@@ -486,9 +489,9 @@ export function kitShortfall(state: GameState, model: ModelId, trim: TrimId, car
 }
 
 /** Cost of a kit shortfall at a supplier. */
-export function kitCost(supplierId: string, kit: Partial<Record<ComponentId, number>>): number {
+export function kitCost(supplierId: string, kit: Partial<Record<ComponentId, number>>, state?: GameState): number {
   let total = 0;
-  for (const c of COMPONENT_IDS) total += (supplierUnitPrice(supplierId, c) ?? 0) * (kit[c] ?? 0);
+  for (const c of COMPONENT_IDS) total += (supplierUnitPrice(supplierId, c, state) ?? 0) * (kit[c] ?? 0);
   return total;
 }
 
@@ -496,10 +499,11 @@ function referenceSupplier() {
   return BALANCE.suppliers.find((s) => s.id === 'corvan') ?? BALANCE.suppliers[0];
 }
 
-export function supplierUnitPrice(supplierId: string, c: ComponentId): number | null {
+/** Price per unit at a supplier today (pass `state` to include price spikes). */
+export function supplierUnitPrice(supplierId: string, c: ComponentId, state?: GameState): number | null {
   const sup = BALANCE.suppliers.find((s) => s.id === supplierId);
   if (!sup) return null;
-  return Math.round(BALANCE.components[c].basePrice * sup.priceMult);
+  return Math.round(BALANCE.components[c].basePrice * sup.priceMult * (state ? componentPriceMult(state, c) : 1));
 }
 
 export function avgUnitCost(state: GameState, c: ComponentId): number {
@@ -518,10 +522,12 @@ export function avgQuality(state: GameState, c: ComponentId): number {
 
 export function dailyPayroll(state: GameState): number {
   const S = BALANCE.staff;
-  return (
-    state.staff.operator * S.operator.dailyWage +
-    state.staff.inspector * S.inspector.dailyWage +
-    state.staff.technician * S.technician.dailyWage
+  const mult = BALANCE.workforce.wages[state.workforce?.wage ?? 'standard'].payMult;
+  return Math.round(
+    (state.staff.operator * S.operator.dailyWage +
+      state.staff.inspector * S.inspector.dailyWage +
+      state.staff.technician * S.technician.dailyWage) *
+      mult,
   );
 }
 
@@ -629,7 +635,7 @@ export function segmentShares(
   const denom = aPlayer + sumRivals + filler || 1;
   const playerShare = aPlayer / denom;
   return {
-    demandPerDay: t.baseDemandPerDay * C.marketSizeCompanies * playerShare,
+    demandPerDay: t.baseDemandPerDay * C.marketSizeCompanies * playerShare * incidentDemandMult(state),
     playerShare,
     rivals: rivals.map(({ a, ...rest }) => ({ ...rest, share: a / denom })),
     otherShare: filler / denom,
@@ -682,7 +688,7 @@ export function estimatedDailyThroughput(state: GameState, model: ModelId, trim:
   for (const plant of operatingPlants(state)) {
     let worst = 0;
     for (const id of STATION_IDS) {
-      const per = cycleMinutes(id, model, trim, finish, state) / stationOf(state, id, plant).slots.length;
+      const per = cycleMinutes(id, model, trim, finish, state) / stationOf(state, id, plant).slots.length / workSpeed(state, id);
       if (per > worst) worst = per;
     }
     if (worst > 0) total += MPD / worst;
@@ -1399,4 +1405,233 @@ export function tutorialSteps(state: GameState): TutorialStep[] {
     },
   ];
   return steps;
+}
+
+// ───────────────────────────── scenario & goals ─────────────────────────────
+
+export function scenarioSpec(state: GameState): ScenarioSpec {
+  return BALANCE.scenarios[state.goals?.scenario ?? 'standard'] ?? BALANCE.scenarios.standard;
+}
+
+/** Equipment, plants and tooling at what they cost. */
+export function fixedAssets(state: GameState): number {
+  return Math.max(0, Math.round(state.finance.capex));
+}
+
+/** Cash + stock + receivables + equipment at cost − loans. */
+export function netWorth(state: GameState): number {
+  return Math.round(state.cash + inventoryValue(state).total + receivables(state) + fixedAssets(state) - totalDebt(state));
+}
+
+export interface GoalProgress {
+  netWorth: number;
+  netWorthTarget: number;
+  /** Player share of the open market over the last 7 days (null without history). */
+  share: number | null;
+  shareTarget: number;
+  met: boolean;
+}
+
+export function goalProgress(state: GameState): GoalProgress {
+  const g = scenarioSpec(state).goal;
+  const nw = netWorth(state);
+  const share = recentMarketShare(state, 7)?.player ?? null;
+  const shareOk = g.marketShare <= 0 || (share !== null && share >= g.marketShare && state.market.history.length >= 7);
+  return { netWorth: nw, netWorthTarget: g.netWorth, share, shareTarget: g.marketShare, met: nw >= g.netWorth && shareOk };
+}
+
+export type Medal = 'gold' | 'silver' | 'bronze';
+
+export function medalFor(state: GameState, days: number): Medal {
+  const par = scenarioSpec(state).goal.parDays;
+  if (days <= par) return 'gold';
+  if (days <= par * 1.5) return 'silver';
+  return 'bronze';
+}
+
+/** Whether a milestone's condition holds now. Unknown ids are never met. */
+export function milestoneMet(state: GameState, id: string): boolean {
+  const st = state.stats;
+  switch (id) {
+    case 'firstDelivery':
+      return st.ordersDelivered >= 1;
+    case 'tenBuilt':
+      return st.vehiclesBuilt >= 10;
+    case 'firstResearch':
+      return state.research.completed.length >= 1;
+    case 'secondModel':
+      return unlockedModels(state).length >= 2;
+    case 'onTime10':
+      return st.ordersDelivered - st.ordersLate >= 10;
+    case 'fiftyBuilt':
+      return st.vehiclesBuilt >= 50;
+    case 'netWorth500k':
+      return netWorth(state) >= 500_000;
+    case 'secondPlant':
+      return operatingPlants(state).length >= 2;
+    case 'reputation75':
+      return state.reputation >= 75;
+    case 'allModels': {
+      const built = new Set(Object.values(state.vehicles).filter((v) => v.finishedAt !== null).map((v) => v.model));
+      return MODEL_IDS.every((m) => built.has(m));
+    }
+    case 'hundredBuilt':
+      return st.vehiclesBuilt >= 100;
+    case 'thirdPlant':
+      return operatingPlants(state).length >= 3;
+    default:
+      return false;
+  }
+}
+
+// ───────────────────────────── events (incidents) ─────────────────────────────
+
+export function activeIncidents(state: GameState): Incident[] {
+  return (state.incidents ?? []).filter((i) => i.until > state.time);
+}
+
+function incidentOf(state: GameState, kind: Incident['kind']): Incident | undefined {
+  return activeIncidents(state).find((i) => i.kind === kind);
+}
+
+export function incidentDemandMult(state: GameState): number {
+  const I = BALANCE.incidents;
+  let m = 1;
+  if (incidentOf(state, 'recession')) m *= I.recession.demandMult;
+  if (incidentOf(state, 'boom')) m *= I.boom.demandMult;
+  return m;
+}
+
+export function incidentOfferMult(state: GameState): number {
+  const I = BALANCE.incidents;
+  let m = 1;
+  if (incidentOf(state, 'recession')) m *= I.recession.offerMult;
+  if (incidentOf(state, 'boom')) m *= I.boom.offerMult;
+  return m;
+}
+
+export function componentPriceMult(state: GameState, c: CId): number {
+  return activeIncidents(state).some((i) => i.kind === 'priceSpike' && i.component === c) ? BALANCE.incidents.priceSpike.mult : 1;
+}
+
+export function supplierOnStrike(state: GameState, supplierId: string): Incident | undefined {
+  return activeIncidents(state).find((i) => i.kind === 'supplierStrike' && i.supplierId === supplierId);
+}
+
+export function plantOnStrike(state: GameState, plant: number): Incident | undefined {
+  if (!state.incidents?.length) return undefined;
+  return activeIncidents(state).find((i) => i.kind === 'laborStrike' && i.plant === plant);
+}
+
+export function incidentTitle(state: GameState, i: Incident): string {
+  switch (i.kind) {
+    case 'supplierStrike':
+      return `${BALANCE.suppliers.find((s) => s.id === i.supplierId)?.name ?? 'Supplier'} on strike`;
+    case 'priceSpike':
+      return `${i.component ? componentName(i.component) : 'Parts'} prices +${Math.round((BALANCE.incidents.priceSpike.mult - 1) * 100)}%`;
+    case 'recession':
+      return 'Recession: fewer buyers';
+    case 'boom':
+      return 'Boom: buyers are back';
+    case 'laborStrike':
+      return `Strike at ${plantOf(state, i.plant ?? 0).name}`;
+  }
+}
+
+export function incidentDetail(i: Incident): string {
+  const I = BALANCE.incidents;
+  switch (i.kind) {
+    case 'supplierStrike':
+      return 'No new orders from this supplier, and its deliveries wait until the strike ends.';
+    case 'priceSpike':
+      return 'Buy from stock you have, or pay the higher price.';
+    case 'recession':
+      return `Market demand ${Math.round((I.recession.demandMult - 1) * 100)}%, dealer offers ${Math.round((I.recession.offerMult - 1) * 100)}%.`;
+    case 'boom':
+      return `Market demand +${Math.round((I.boom.demandMult - 1) * 100)}%, dealer offers +${Math.round((I.boom.offerMult - 1) * 100)}%.`;
+    case 'laborStrike':
+      return 'Workers walked out over low morale. The plant is stopped until they return.';
+  }
+}
+
+// ───────────────────────────── loans ─────────────────────────────
+
+export function totalDebt(state: GameState): number {
+  return (state.loans ?? []).reduce((n, l) => n + l.balance, 0);
+}
+
+export function creditLimit(state: GameState): number {
+  const L = BALANCE.loans;
+  return Math.round(L.creditBase + state.reputation * L.creditPerReputation + Math.max(0, operatingPlants(state).length - 1) * L.creditPerPlant);
+}
+
+/** Fixed daily instalment that repays `amount` over `days` at `rate` per day. */
+export function loanPayment(amount: number, rate: number, days: number): number {
+  if (rate <= 0) return Math.ceil(amount / days);
+  return Math.ceil((amount * rate) / (1 - Math.pow(1 + rate, -days)));
+}
+
+export function loanBlocker(state: GameState, offer: number): string | null {
+  const o = BALANCE.loans.offers[offer];
+  if (!o) return 'Unknown loan.';
+  if (state.loans.length >= BALANCE.loans.maxLoans) return `You can have at most ${BALANCE.loans.maxLoans} loans at once.`;
+  const room = creditLimit(state) - totalDebt(state);
+  if (o.amount > room) return `Over your credit limit: ${formatMoney(Math.max(0, room))} of ${formatMoney(creditLimit(state))} left.`;
+  if (state.insolventSince !== null) return 'Banks will not lend while your cash is negative.';
+  return null;
+}
+
+export function dailyLoanPayments(state: GameState): number {
+  return (state.loans ?? []).reduce((n, l) => n + Math.min(l.dailyPayment, Math.round(l.balance * (1 + l.dailyRate))), 0);
+}
+
+// ───────────────────────────── workforce ─────────────────────────────
+
+/** Work speed from morale: speedAtZero at 0, 1.0 at 50, speedAtFull at 100. */
+export function moraleSpeed(state: GameState): number {
+  const W = BALANCE.workforce;
+  const m = state.workforce?.morale ?? 50;
+  return m >= 50 ? 1 + ((W.speedAtFull - 1) * (m - 50)) / 50 : W.speedAtZero + ((1 - W.speedAtZero) * m) / 50;
+}
+
+/** Multiplier on work done per minute at a station (morale and operator training). */
+export function workSpeed(state: GameState, id: StationId): number {
+  const train = id === 'inspection' ? 0 : (state.workforce?.training.operator ?? 0) * BALANCE.workforce.training.operatorSpeedPerLevel;
+  return moraleSpeed(state) * (1 + train);
+}
+
+/** Multiplier on the chance of a build defect (operator training lowers it, low morale raises it). */
+export function workforceDefectMult(state: GameState): number {
+  const W = BALANCE.workforce;
+  const m = state.workforce?.morale ?? 50;
+  const moraleMult = m >= 50 ? 1 : 1 + (W.defectAtZero * (50 - m)) / 50;
+  return moraleMult * Math.pow(W.training.operatorDefectMultPerLevel, state.workforce?.training.operator ?? 0);
+}
+
+/** Multiplier on maintenance and repair time from technician training. */
+export function technicianTimeMult(state: GameState): number {
+  return Math.pow(BALANCE.workforce.training.technicianTimeMultPerLevel, state.workforce?.training.technician ?? 0);
+}
+
+export function trainingCost(state: GameState, role: StaffRole): number | null {
+  const T = BALANCE.workforce.training;
+  const lvl = state.workforce.training[role];
+  if (lvl >= T.maxLevel) return null;
+  return T.baseCost[lvl] + T.perHead * state.staff[role];
+}
+
+export function trainingBlocker(state: GameState, role: StaffRole): string | null {
+  const cost = trainingCost(state, role);
+  if (cost === null) return 'Fully trained.';
+  if (state.workforce.course) return 'A course is already running.';
+  if (state.staff[role] <= 0) return `You have no ${BALANCE.staff[role].plural.toLowerCase()} to train.`;
+  if (state.cash < cost) return `Need ${formatMoney(cost)}.`;
+  return null;
+}
+
+export function moraleLabel(m: number): string {
+  if (m >= 75) return 'High';
+  if (m >= 50) return 'Steady';
+  if (m >= BALANCE.workforce.strike.belowMorale) return 'Low';
+  return 'Strike risk';
 }
